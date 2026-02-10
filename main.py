@@ -9,15 +9,15 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v28.0 (FULL STACK) ---
+# --- CONFIGURACIÓN EURO-SNIPER v29.0 (SPY MODE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "14:45" # UTC (20:00 Tucson)
+RUN_TIME = "14:53" # UTC (20:00 Tucson)
 
-# --- AJUSTES MATEMÁTICOS ---
+# AJUSTES MATEMÁTICOS
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.85 # Factor de memoria (Partidos recientes pesan mas)
+DECAY_ALPHA = 0.85 # Memoria exponencial (Partidos recientes pesan más)
 SEASON = '2526'         
 HISTORY_FILE = "historial_picks.csv"
 
@@ -47,12 +47,11 @@ class TelegramSniper:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- FULL STACK ENGINE STARTED ---", flush=True)
+        print("--- SPY MODE ENGINE STARTED ---", flush=True)
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
             print("❌ ERROR: Credenciales faltantes", flush=True)
 
     def _init_history_file(self):
-        # Inicializa el CSV si no existe
         if not os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -68,7 +67,6 @@ class TelegramSniper:
             except: time.sleep(1)
 
     def send_file(self):
-        """Envía la hoja de cálculo a Telegram"""
         if not os.path.exists(HISTORY_FILE): return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument"
         try:
@@ -77,19 +75,15 @@ class TelegramSniper:
         except Exception as e: print(f"Error enviando archivo: {e}", flush=True)
 
     def calculate_exponential_form(self, df, team):
-        """Cálculo de Forma Avanzada (EMA)"""
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
         if len(matches) == 0: return 1.0
-        
         weighted_points = 0; total_weight = 0
         for i, (_, row) in enumerate(matches.iterrows()):
             if row['HomeTeam'] == team: pts = 3 if row['FTHG'] > row['FTAG'] else (1 if row['FTHG'] == row['FTAG'] else 0)
             else: pts = 3 if row['FTAG'] > row['FTHG'] else (1 if row['FTAG'] == row['FTHG'] else 0)
-            
             weight = pow(DECAY_ALPHA, 4 - i) 
             weighted_points += pts * weight
             total_weight += weight
-            
         if total_weight == 0: return 1.0
         weighted_avg = weighted_points / total_weight
         return 1.0 + ((weighted_avg / 3.0 - 0.5) * 2 * 0.25)
@@ -114,7 +108,6 @@ class TelegramSniper:
         return False
 
     def get_league_data(self, div):
-        # Descarga datos historicos y prepara stats
         if div in self.history_cache: return self.history_cache[div]
         url = f"https://www.football-data.co.uk/mmz4281/{SEASON}/{div}.csv"
         for i in range(2):
@@ -125,7 +118,6 @@ class TelegramSniper:
                 except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
                 df = df.dropna(subset=['FTHG', 'FTAG'])
                 
-                # Forma Exponencial
                 team_stats = {}
                 all_teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
                 for team in all_teams:
@@ -140,7 +132,6 @@ class TelegramSniper:
                 stats['Att_H'] = stats['HS'] / avg_h; stats['Def_H'] = stats['HC'] / avg_a
                 stats['Att_A'] = stats['AS'] / avg_a; stats['Def_A'] = stats['AC'] / avg_h
                 
-                # Importante: Retornamos 'raw_df' para la auditoria
                 data_pack = {'stats': stats.fillna(1.0), 'avgs': {'h': avg_h, 'a': avg_a}, 'teams': stats.index.tolist(), 'details': team_stats, 'raw_df': df}
                 self.history_cache[div] = data_pack
                 return data_pack
@@ -152,9 +143,7 @@ class TelegramSniper:
         return matches[0] if matches else None
 
     def audit_history(self):
-        """EL CONTADOR: Revisa resultados pasados"""
         if not os.path.exists(HISTORY_FILE): return
-        
         print("[AUDITOR] Revisando apuestas pendientes...", flush=True)
         rows = []
         updated = False
@@ -165,7 +154,6 @@ class TelegramSniper:
             fieldnames = reader.fieldnames
             for row in reader:
                 if row['Result'] == 'PENDING':
-                    # Buscar la liga para descargar resultados
                     div = None
                     for code, cfg in LEAGUE_CONFIG.items():
                         if cfg['name'] == row['League']: div = code; break
@@ -174,10 +162,8 @@ class TelegramSniper:
                         data = self.get_league_data(div)
                         if data:
                             raw = data['raw_df']
-                            # Buscar el partido en los resultados (ventana de 3 dias por si acaso)
                             match_date = pd.to_datetime(row['Date'], dayfirst=True)
                             real_home = self.find_team(row['Home'], data['teams'])
-                            
                             mask = (
                                 (raw['Date'] >= match_date - timedelta(days=1)) & 
                                 (raw['Date'] <= match_date + timedelta(days=1)) &
@@ -187,23 +173,17 @@ class TelegramSniper:
                             
                             if not match.empty:
                                 updated = True
-                                fthg = match.iloc[0]['FTHG']
-                                ftag = match.iloc[0]['FTAG']
-                                pick = row['Pick']
-                                odds = float(row['Fair_Odd'])
-                                
-                                # JUEZ IMPARCIAL
-                                result = "LOSS"; pnl = -1.0 # Asumimos perdida de 1 unidad
+                                fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
+                                pick = row['Pick']; odds = float(row['Fair_Odd'])
+                                result = "LOSS"; pnl = -1.0 
                                 
                                 if "GANA LOCAL" in pick and fthg > ftag: result = "WIN"; pnl = odds - 1
                                 elif "GANA VISITA" in pick and ftag > fthg: result = "WIN"; pnl = odds - 1
-                                elif "1X" in pick and fthg >= ftag: result = "WIN"; pnl = (odds - 1) * 0.5 # Conservador
+                                elif "1X" in pick and fthg >= ftag: result = "WIN"; pnl = (odds - 1) * 0.5 
                                 elif "X2" in pick and ftag >= fthg: result = "WIN"; pnl = (odds - 1) * 0.5
                                 elif "OVER" in pick and (fthg+ftag) > 2.5: result = "WIN"; pnl = 0.9
                                 
-                                row['Result'] = result
-                                row['Profit'] = round(pnl, 2)
-                                
+                                row['Result'] = result; row['Profit'] = round(pnl, 2)
                                 if result == "WIN": wins += 1; profit_units += pnl
                                 else: losses += 1; profit_units -= 1.0
                 rows.append(row)
@@ -213,17 +193,8 @@ class TelegramSniper:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
-            
-            # Enviar Reporte Contable
             emoji = "🤑" if profit_units > 0 else "📉"
-            msg = (
-                f"📝 <b>REPORTE DE RESULTADOS</b>\n"
-                f"✅ Ganadas: {wins}\n"
-                f"❌ Perdidas: {losses}\n"
-                f"{emoji} Balance: <b>{profit_units:+.2f} Unidades</b>\n"
-                f"📂 <i>Archivo actualizado adjunto.</i>"
-            )
-            self.send_msg(msg)
+            self.send_msg(f"📝 <b>AUDITORÍA</b>\n✅ {wins} | ❌ {losses}\n{emoji} PnL: <b>{profit_units:+.2f} U</b>")
             self.send_file()
 
     def analyze_match(self, home, away, div):
@@ -236,18 +207,13 @@ class TelegramSniper:
         xg_h = (s.loc[rh, 'Att_H'] * info[rh]['form']) * s.loc[ra, 'Def_A'] * avgs['h']
         xg_a = (s.loc[ra, 'Att_A'] * info[ra]['form']) * s.loc[rh, 'Def_H'] * avgs['a']
         
-        # Monte Carlo 100k
         h_sim = np.random.poisson(xg_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(xg_a, SIMULATION_RUNS)
         
-        win_h = np.mean(h_sim > a_sim)
-        win_a = np.mean(h_sim < a_sim)
+        win_h = np.mean(h_sim > a_sim); win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
-        
-        # Draw Correction (Dixon-Coles simplificado)
-        if (xg_h + xg_a) < 2.40:
-            boost = 0.03
-            draw += boost; win_h -= boost/2; win_a -= boost/2
+        if (xg_h + xg_a) < 2.40: # Dixon-Coles boost
+            boost = 0.03; draw += boost; win_h -= boost/2; win_a -= boost/2
         
         over25 = np.mean((h_sim + a_sim) > 2.5)
         
@@ -269,30 +235,31 @@ class TelegramSniper:
         return "2.0% (MAX)"
 
     def log_new_pick(self, date, league, home, away, pick, conf, fair_odd):
-        """Guarda el nuevo pick en el CSV como PENDING"""
         with open(HISTORY_FILE, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([date, league, home, away, pick, f"{conf:.2f}", f"{fair_odd:.2f}", "PENDING", 0])
 
     def run_daily_scan(self):
-        # 1. Ejecutar Auditoría (Contabilidad)
-        self.audit_history()
+        self.audit_history() # 1. Auditar
 
-        # 2. Ejecutar Análisis (Predicción)
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando análisis: {today}", flush=True)
         
-        if not self.load_fixtures(): return
+        if not self.load_fixtures():
+            self.send_msg(f"⚠️ Error descarga: {today}")
+            return
+
         try: target = pd.to_datetime(today, dayfirst=True)
         except: return
         
         daily = self.fixtures[self.fixtures['Date'] == target]
         if daily.empty:
-            self.send_msg(f"💤 <b>{today}:</b> Sin partidos.")
+            self.send_msg(f"💤 <b>{today}:</b> Base de datos vacía (Sin partidos listados).")
             return
 
         found_picks = 0
         header_sent = False
+        rejected_log = [] # Lista de descartes para Modo Espía
 
         for idx, row in daily.iterrows():
             div = row['Div']
@@ -311,18 +278,17 @@ class TelegramSniper:
                     elif po > 0.63: pick = "OVER 2.5 GOLES"; conf = po
                     
                     if pick:
+                        # --- PICK APROBADO ---
                         found_picks += 1
                         if not header_sent:
-                            self.send_msg(f"🐺 <b>EURO-SNIPER V28</b>\n📅 {today} | 🧬 Math + Audit")
+                            self.send_msg(f"🐺 <b>EURO-SNIPER v29</b>\n📅 {today} | 🧬 Elite Math")
                             header_sent = True
 
                         fair_odd = 1/conf
                         stake_reco = self.calculate_kelly_stake(conf, fair_odd, threshold)
                         
-                        # Guardar en CSV
                         self.log_new_pick(today, LEAGUE_CONFIG[div]['name'], res['teams'][0], res['teams'][1], pick, conf, fair_odd)
 
-                        # Visuals
                         f_h = res['form'][0]; f_a = res['form'][1]
                         mom_h = "📈" if f_h > 1.05 else ("📉" if f_h < 0.95 else "➡️")
                         mom_a = "📈" if f_a > 1.05 else ("📉" if f_a < 0.95 else "➡️")
@@ -333,21 +299,33 @@ class TelegramSniper:
                             f"📉 xG: {res['xg'][0]:.2f} - {res['xg'][1]:.2f}\n"
                             f"───────────────\n"
                             f"💎 <b>{pick}</b>\n"
-                            f"🧮 Prob: <b>{conf*100:.1f}%</b> ( >{threshold*100:.0f}%)\n"
+                            f"🧮 Prob: <b>{conf*100:.1f}%</b>\n"
                             f"⚖️ Fair Odd: <b>@{fair_odd:.2f}</b>\n"
                             f"💰 Kelly Stake: <b>{stake_reco}</b>"
                         )
                         self.send_msg(msg)
                         time.sleep(1.5)
+                    else:
+                        # --- PICK RECHAZADO (MODO ESPÍA) ---
+                        # Guardamos por qué se rechazó el partido para reportar al final
+                        max_prob = max(ph, pa, d1x, dx2)
+                        reason = f"Prob {max_prob*100:.0f}% vs Req {threshold*100:.0f}%"
+                        rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: {reason}")
 
+        # REPORTE FINAL DEL DÍA
         if found_picks == 0:
-            self.send_msg(f"⚠️ <b>{today}:</b> Sin valor en el mercado.")
+            if rejected_log:
+                # MODO ESPÍA ACTIVADO: Muestra por qué no apostamos
+                rej_msg = "\n".join(rejected_log[:15]) # Limitado a 15 para no saturar
+                self.send_msg(f"⚠️ <b>{today}:</b> Se analizaron {len(rejected_log)} partidos, pero NINGUNO es seguro.\n\n<b>🔍 Descartes (Spy Mode):</b>\n{rej_msg}")
+            else:
+                self.send_msg(f"⚠️ <b>{today}:</b> No hay partidos de Ligas Elite hoy.")
         else:
             self.send_msg(f"🏁 <b>Fin del reporte.</b>")
 
 if __name__ == "__main__":
     bot = TelegramSniper()
-    print(f"🤖 BOT FULL STACK. Hora target: {RUN_TIME} UTC", flush=True)
+    print(f"🤖 BOT SPY MODE. Hora target: {RUN_TIME} UTC", flush=True)
     if os.getenv("SELF_TEST", "False") == "True": bot.run_daily_scan()
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
     while True: schedule.run_pending(); time.sleep(60)
