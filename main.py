@@ -152,7 +152,7 @@ class TelegramSniper:
         daily = self.fixtures[self.fixtures['Date'] == target]
         
         if daily.empty:
-            print("No hay partidos hoy.")
+            self.send_msg(f"💤 Hoy {today} no hay partidos programados en el calendario.")
             return
 
         found_picks = 0
