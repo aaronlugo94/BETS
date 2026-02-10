@@ -9,15 +9,15 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v29.0 (SPY MODE) ---
+# --- CONFIGURACIÓN EURO-SNIPER v30.0 (ROLEX EDITION) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "14:53" # UTC (20:00 Tucson)
+RUN_TIME = "15:02" # UTC (20:00 Tucson)
 
 # AJUSTES MATEMÁTICOS
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.85 # Memoria exponencial (Partidos recientes pesan más)
+DECAY_ALPHA = 0.85 # Memoria exponencial
 SEASON = '2526'         
 HISTORY_FILE = "historial_picks.csv"
 
@@ -47,7 +47,7 @@ class TelegramSniper:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- SPY MODE ENGINE STARTED ---", flush=True)
+        print("--- ROLEX ENGINE STARTED ---", flush=True)
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
             print("❌ ERROR: Credenciales faltantes", flush=True)
 
@@ -144,7 +144,7 @@ class TelegramSniper:
 
     def audit_history(self):
         if not os.path.exists(HISTORY_FILE): return
-        print("[AUDITOR] Revisando apuestas pendientes...", flush=True)
+        print("[AUDITOR] Running audit...", flush=True)
         rows = []
         updated = False
         wins = 0; losses = 0; profit_units = 0.0
@@ -216,12 +216,13 @@ class TelegramSniper:
             boost = 0.03; draw += boost; win_h -= boost/2; win_a -= boost/2
         
         over25 = np.mean((h_sim + a_sim) > 2.5)
+        btts = np.mean((h_sim > 0) & (a_sim > 0)) # BTTS AÑADIDO
         
         return {
             'teams': (rh, ra),
             'xg': (xg_h, xg_a),
             'probs': (win_h, draw, win_a),
-            'goals': over25,
+            'goals': (over25, btts),
             'dc': (win_h + draw, win_a + draw),
             'form': (info[rh]['form'], info[ra]['form'])
         }
@@ -240,7 +241,7 @@ class TelegramSniper:
             writer.writerow([date, league, home, away, pick, f"{conf:.2f}", f"{fair_odd:.2f}", "PENDING", 0])
 
     def run_daily_scan(self):
-        self.audit_history() # 1. Auditar
+        self.audit_history()
 
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando análisis: {today}", flush=True)
@@ -254,78 +255,89 @@ class TelegramSniper:
         
         daily = self.fixtures[self.fixtures['Date'] == target]
         if daily.empty:
-            self.send_msg(f"💤 <b>{today}:</b> Base de datos vacía (Sin partidos listados).")
+            self.send_msg(f"💤 <b>{today}:</b> Base de datos vacía.")
             return
 
         found_picks = 0
         header_sent = False
-        rejected_log = [] # Lista de descartes para Modo Espía
+        rejected_log = []
 
         for idx, row in daily.iterrows():
             div = row['Div']
             if div in LEAGUE_CONFIG:
                 res = self.analyze_match(row['HomeTeam'], row['AwayTeam'], div)
                 if res:
-                    ph, px, pa = res['probs']; po = res['goals']; d1x, dx2 = res['dc']
+                    ph, px, pa = res['probs']; po, pb = res['goals']; d1x, dx2 = res['dc']
                     threshold = LEAGUE_CONFIG[div]['threshold']
                     
-                    pick = None; conf = 0.0
+                    pick = None; conf = 0.0; pick_type = ""
                     
-                    if ph > threshold: pick = "GANA LOCAL"; conf = ph
-                    elif pa > threshold: pick = "GANA VISITA"; conf = pa
-                    elif d1x > 0.83: pick = "1X (Local/Empate)"; conf = d1x
-                    elif dx2 > 0.83: pick = "X2 (Visita/Empate)"; conf = dx2
-                    elif po > 0.63: pick = "OVER 2.5 GOLES"; conf = po
+                    if ph > threshold: pick = "GANA LOCAL"; conf = ph; pick_type="WIN"
+                    elif pa > threshold: pick = "GANA VISITA"; conf = pa; pick_type="WIN"
+                    elif d1x > 0.83: pick = "1X"; conf = d1x; pick_type="DC"
+                    elif dx2 > 0.83: pick = "X2"; conf = dx2; pick_type="DC"
+                    elif po > 0.63: pick = "OVER 2.5"; conf = po; pick_type="GOL"
                     
                     if pick:
-                        # --- PICK APROBADO ---
                         found_picks += 1
                         if not header_sent:
-                            self.send_msg(f"🐺 <b>EURO-SNIPER v29</b>\n📅 {today} | 🧬 Elite Math")
+                            self.send_msg(f"🐺 <b>EURO-SNIPER v30</b>\n📅 {today} | 🧬 X-RAY")
                             header_sent = True
 
                         fair_odd = 1/conf
-                        stake_reco = self.calculate_kelly_stake(conf, fair_odd, threshold)
-                        
                         self.log_new_pick(today, LEAGUE_CONFIG[div]['name'], res['teams'][0], res['teams'][1], pick, conf, fair_odd)
 
+                        # Visuales Avanzados
                         f_h = res['form'][0]; f_a = res['form'][1]
-                        mom_h = "📈" if f_h > 1.05 else ("📉" if f_h < 0.95 else "➡️")
-                        mom_a = "📈" if f_a > 1.05 else ("📉" if f_a < 0.95 else "➡️")
+                        mom_h = "Excelente" if f_h > 1.1 else ("Bien" if f_h > 1.0 else "Mal")
+                        mom_a = "Excelente" if f_a > 1.1 else ("Bien" if f_a > 1.0 else "Mal")
+                        
+                        # Kelly Stake visual
+                        edge = conf - threshold
+                        stake_bar = "🟦⬜⬜ (Min)"
+                        if edge > 0.10: stake_bar = "🟦🟦⬜ (Fuerte)"
+                        if edge > 0.15: stake_bar = "🟦🟦🟦 (MAX)"
+
+                        emoji_pick = "👉"
+                        if pick_type == "WIN": emoji_pick = "🔥"
+                        if pick_type == "DC": emoji_pick = "🛡️"
+                        if pick_type == "GOL": emoji_pick = "⚽"
 
                         msg = (
                             f"🏆 <b>{LEAGUE_CONFIG[div]['name']}</b>\n"
-                            f"<b>{res['teams'][0]}</b> {mom_h} vs {mom_a} <b>{res['teams'][1]}</b>\n"
-                            f"📉 xG: {res['xg'][0]:.2f} - {res['xg'][1]:.2f}\n"
+                            f"<b>{res['teams'][0]}</b> vs <b>{res['teams'][1]}</b>\n"
                             f"───────────────\n"
-                            f"💎 <b>{pick}</b>\n"
-                            f"🧮 Prob: <b>{conf*100:.1f}%</b>\n"
+                            f"⚡ <i>Momentum:</i> {mom_h} vs {mom_a}\n"
+                            f"📉 <i>xG Sim:</i> {res['xg'][0]:.2f} - {res['xg'][1]:.2f}\n"
+                            f"───────────────\n"
+                            f"📊 <b>X-RAY DATA:</b>\n"
+                            f"• 1X2: {ph*100:.0f}% / {px*100:.0f}% / {pa*100:.0f}%\n"
+                            f"• DC: 1X {d1x*100:.0f}% | X2 {dx2*100:.0f}%\n"
+                            f"• Gols: Ov {po*100:.0f}% | BTTS {pb*100:.0f}%\n"
+                            f"───────────────\n"
+                            f"🎯 <b>VEREDICTO:</b>\n"
+                            f"{emoji_pick} <b>{pick}</b>\n"
                             f"⚖️ Fair Odd: <b>@{fair_odd:.2f}</b>\n"
-                            f"💰 Kelly Stake: <b>{stake_reco}</b>"
+                            f"💰 Stake: <b>{stake_bar}</b>"
                         )
                         self.send_msg(msg)
                         time.sleep(1.5)
                     else:
-                        # --- PICK RECHAZADO (MODO ESPÍA) ---
-                        # Guardamos por qué se rechazó el partido para reportar al final
                         max_prob = max(ph, pa, d1x, dx2)
-                        reason = f"Prob {max_prob*100:.0f}% vs Req {threshold*100:.0f}%"
-                        rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: {reason}")
+                        rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: Prob {max_prob*100:.0f}% (Req {threshold*100:.0f}%)")
 
-        # REPORTE FINAL DEL DÍA
         if found_picks == 0:
             if rejected_log:
-                # MODO ESPÍA ACTIVADO: Muestra por qué no apostamos
-                rej_msg = "\n".join(rejected_log[:15]) # Limitado a 15 para no saturar
-                self.send_msg(f"⚠️ <b>{today}:</b> Se analizaron {len(rejected_log)} partidos, pero NINGUNO es seguro.\n\n<b>🔍 Descartes (Spy Mode):</b>\n{rej_msg}")
+                rej_msg = "\n".join(rejected_log[:15])
+                self.send_msg(f"⚠️ <b>{today}:</b> Ningún partido seguro hoy.\n\n<b>🔍 Descartes:</b>\n{rej_msg}")
             else:
-                self.send_msg(f"⚠️ <b>{today}:</b> No hay partidos de Ligas Elite hoy.")
+                self.send_msg(f"⚠️ <b>{today}:</b> Sin partidos.")
         else:
             self.send_msg(f"🏁 <b>Fin del reporte.</b>")
 
 if __name__ == "__main__":
     bot = TelegramSniper()
-    print(f"🤖 BOT SPY MODE. Hora target: {RUN_TIME} UTC", flush=True)
+    print(f"🤖 BOT ROLEX EDITION. Hora target: {RUN_TIME} UTC", flush=True)
     if os.getenv("SELF_TEST", "False") == "True": bot.run_daily_scan()
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
     while True: schedule.run_pending(); time.sleep(60)
