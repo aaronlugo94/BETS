@@ -9,11 +9,11 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v31.0 (GOLD MASTER) ---
+# --- CONFIGURACIÓN EURO-SNIPER v32.0 (AMERICAN SNIPER) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "15:07" # UTC (20:00 Tucson)
+RUN_TIME = "15:31" # UTC (20:00 Tucson)
 
 # AJUSTES MATEMÁTICOS
 SIMULATION_RUNS = 100000 
@@ -47,7 +47,7 @@ class TelegramSniper:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- GOLD MASTER ENGINE STARTED ---", flush=True)
+        print("--- AMERICAN SNIPER ENGINE STARTED ---", flush=True)
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
             print("❌ ERROR: Credenciales faltantes", flush=True)
 
@@ -55,7 +55,15 @@ class TelegramSniper:
         if not os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Confidence', 'Fair_Odd', 'Result', 'Profit'])
+                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Confidence', 'Fair_Odd_US', 'Result', 'Profit_Units'])
+
+    def decimal_to_american(self, decimal):
+        """Convierte cuota Decimal (1.50) a Americana (-200)"""
+        if decimal <= 1.01: return -10000
+        if decimal >= 2.00:
+            return f"+{int((decimal - 1) * 100)}"
+        else:
+            return f"{int(-100 / (decimal - 1))}"
 
     def send_msg(self, text):
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
@@ -174,17 +182,23 @@ class TelegramSniper:
                             if not match.empty:
                                 updated = True
                                 fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
-                                pick = row['Pick']; odds = float(row['Fair_Odd'])
+                                pick = row['Pick']; 
+                                
+                                # Convertir Odds US a Decimal para el cálculo de Profit
+                                odd_us = str(row['Fair_Odd_US'])
+                                if odd_us.startswith("+"): odd_dec = (int(odd_us[1:]) / 100) + 1
+                                else: odd_dec = (100 / abs(int(odd_us))) + 1
+                                
                                 result = "LOSS"; pnl = -1.0 
                                 
-                                if "GANA LOCAL" in pick and fthg > ftag: result = "WIN"; pnl = odds - 1
-                                elif "GANA VISITA" in pick and ftag > fthg: result = "WIN"; pnl = odds - 1
-                                elif "1X" in pick and fthg >= ftag: result = "WIN"; pnl = (odds - 1) * 0.5 
-                                elif "X2" in pick and ftag >= fthg: result = "WIN"; pnl = (odds - 1) * 0.5
+                                if "GANA LOCAL" in pick and fthg > ftag: result = "WIN"; pnl = odd_dec - 1
+                                elif "GANA VISITA" in pick and ftag > fthg: result = "WIN"; pnl = odd_dec - 1
+                                elif "1X" in pick and fthg >= ftag: result = "WIN"; pnl = (odd_dec - 1) * 0.5 
+                                elif "X2" in pick and ftag >= fthg: result = "WIN"; pnl = (odd_dec - 1) * 0.5
                                 elif "OVER" in pick and (fthg+ftag) > 2.5: result = "WIN"; pnl = 0.9
                                 elif "BTTS" in pick and (fthg > 0 and ftag > 0): result = "WIN"; pnl = 0.9
                                 
-                                row['Result'] = result; row['Profit'] = round(pnl, 2)
+                                row['Result'] = result; row['Profit_Units'] = round(pnl, 2)
                                 if result == "WIN": wins += 1; profit_units += pnl
                                 else: losses += 1; profit_units -= 1.0
                 rows.append(row)
@@ -228,7 +242,7 @@ class TelegramSniper:
             'form': (info[rh]['form'], info[ra]['form'])
         }
 
-    def calculate_kelly_stake(self, prob, fair_odd, threshold):
+    def calculate_kelly_stake(self, prob, threshold):
         edge = prob - threshold
         if edge < 0: return "NO BET"
         if edge < 0.05: return "0.5% (Min)"
@@ -236,10 +250,10 @@ class TelegramSniper:
         if edge < 0.15: return "1.5% (Fuerte)"
         return "2.0% (MAX)"
 
-    def log_new_pick(self, date, league, home, away, pick, conf, fair_odd):
+    def log_new_pick(self, date, league, home, away, pick, conf, us_odd):
         with open(HISTORY_FILE, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow([date, league, home, away, pick, f"{conf:.2f}", f"{fair_odd:.2f}", "PENDING", 0])
+            writer.writerow([date, league, home, away, pick, f"{conf:.2f}", us_odd, "PENDING", 0])
 
     def run_daily_scan(self):
         self.audit_history()
@@ -273,28 +287,29 @@ class TelegramSniper:
                     
                     pick = None; conf = 0.0; pick_type = ""
                     
-                    # --- LÓGICA DE DECISIÓN COMPLETA (CORREGIDA) ---
+                    # LOGICA DECISION
                     if ph > threshold: pick = "GANA LOCAL"; conf = ph; pick_type="WIN"
                     elif pa > threshold: pick = "GANA VISITA"; conf = pa; pick_type="WIN"
                     elif d1x > 0.83: pick = "1X"; conf = d1x; pick_type="DC"
                     elif dx2 > 0.83: pick = "X2"; conf = dx2; pick_type="DC"
                     elif po > 0.63: pick = "OVER 2.5"; conf = po; pick_type="GOL"
-                    elif pb > 0.63: pick = "BTTS (Ambos Marcan)"; conf = pb; pick_type="BTTS" # <-- GATILLO AGREGADO
+                    elif pb > 0.63: pick = "BTTS (Ambos)"; conf = pb; pick_type="BTTS"
                     
                     if pick:
                         found_picks += 1
                         if not header_sent:
-                            self.send_msg(f"🐺 <b>EURO-SNIPER v31</b>\n📅 {today} | 🧬 Gold Master")
+                            self.send_msg(f"🐺 <b>EURO-SNIPER v32 (US)</b>\n📅 {today} | 🇺🇸 Odds")
                             header_sent = True
 
-                        fair_odd = 1/conf
-                        stake_reco = self.calculate_kelly_stake(conf, fair_odd, threshold)
+                        fair_odd_dec = 1/conf
+                        fair_odd_us = self.decimal_to_american(fair_odd_dec)
+                        stake_reco = self.calculate_kelly_stake(conf, threshold)
                         
-                        self.log_new_pick(today, LEAGUE_CONFIG[div]['name'], res['teams'][0], res['teams'][1], pick, conf, fair_odd)
+                        self.log_new_pick(today, LEAGUE_CONFIG[div]['name'], res['teams'][0], res['teams'][1], pick, conf, fair_odd_us)
 
                         f_h = res['form'][0]; f_a = res['form'][1]
-                        mom_h = "Excelente" if f_h > 1.1 else ("Bien" if f_h > 1.0 else "Mal")
-                        mom_a = "Excelente" if f_a > 1.1 else ("Bien" if f_a > 1.0 else "Mal")
+                        mom_h = "🔥" if f_h > 1.05 else ("🧊" if f_h < 0.95 else "➡️")
+                        mom_a = "🔥" if f_a > 1.05 else ("🧊" if f_a < 0.95 else "➡️")
                         
                         edge = conf - threshold
                         stake_bar = "🟦⬜⬜ (Min)"
@@ -302,17 +317,14 @@ class TelegramSniper:
                         if edge > 0.15: stake_bar = "🟦🟦🟦 (MAX)"
 
                         emoji_pick = "👉"
-                        if pick_type == "WIN": emoji_pick = "🔥"
+                        if pick_type == "WIN": emoji_pick = "💰"
                         if pick_type == "DC": emoji_pick = "🛡️"
                         if pick_type == "GOL": emoji_pick = "⚽"
                         if pick_type == "BTTS": emoji_pick = "🥊"
 
                         msg = (
                             f"🏆 <b>{LEAGUE_CONFIG[div]['name']}</b>\n"
-                            f"<b>{res['teams'][0]}</b> vs <b>{res['teams'][1]}</b>\n"
-                            f"───────────────\n"
-                            f"⚡ <i>Momentum:</i> {mom_h} vs {mom_a}\n"
-                            f"📉 <i>xG Sim:</i> {res['xg'][0]:.2f} - {res['xg'][1]:.2f}\n"
+                            f"<b>{res['teams'][0]}</b> {mom_h} vs {mom_a} <b>{res['teams'][1]}</b>\n"
                             f"───────────────\n"
                             f"📊 <b>X-RAY DATA:</b>\n"
                             f"• 1X2: {ph*100:.0f}% / {px*100:.0f}% / {pa*100:.0f}%\n"
@@ -321,28 +333,28 @@ class TelegramSniper:
                             f"───────────────\n"
                             f"🎯 <b>VEREDICTO:</b>\n"
                             f"{emoji_pick} <b>{pick}</b>\n"
-                            f"⚖️ Fair Odd: <b>@{fair_odd:.2f}</b>\n"
-                            f"💰 Stake: <b>{stake_bar}</b>"
+                            f"⚖️ Fair Odd: <b>{fair_odd_us}</b>\n"
+                            f"🏦 Stake: <b>{stake_bar}</b>"
                         )
                         self.send_msg(msg)
                         time.sleep(1.5)
                     else:
-                        # CORREGIDO: Ahora mira también Over y BTTS para el rechazo
                         max_prob = max(ph, pa, d1x, dx2, po, pb)
-                        rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: Prob {max_prob*100:.0f}% (Req {threshold*100:.0f}%)")
+                        rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: Max {max_prob*100:.0f}% (Req {threshold*100:.0f}%)")
 
-        if found_picks == 0:
-            if rejected_log:
-                rej_msg = "\n".join(rejected_log[:15])
-                self.send_msg(f"⚠️ <b>{today}:</b> Ningún partido seguro hoy.\n\n<b>🔍 Descartes:</b>\n{rej_msg}")
-            else:
-                self.send_msg(f"⚠️ <b>{today}:</b> Sin partidos.")
+        # REPORTE DE DESCARTES (Siempre, al final)
+        if rejected_log:
+            rej_msg = "\n".join(rejected_log[:10]) # Top 10 descartes
+            self.send_msg(f"🗑️ <b>DESCARTES DEL DÍA:</b>\n{rej_msg}")
+        
+        if found_picks == 0 and not rejected_log:
+            self.send_msg(f"⚠️ <b>{today}:</b> Sin partidos en la lista.")
         else:
             self.send_msg(f"🏁 <b>Fin del reporte.</b>")
 
 if __name__ == "__main__":
     bot = TelegramSniper()
-    print(f"🤖 BOT GOLD MASTER. Hora target: {RUN_TIME} UTC", flush=True)
+    print(f"🤖 BOT AMERICAN SNIPER. Hora target: {RUN_TIME} UTC", flush=True)
     if os.getenv("SELF_TEST", "False") == "True": bot.run_daily_scan()
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
     while True: schedule.run_pending(); time.sleep(60)
