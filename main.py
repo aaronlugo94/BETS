@@ -9,15 +9,15 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v30.0 (ROLEX EDITION) ---
+# --- CONFIGURACIÓN EURO-SNIPER v31.0 (GOLD MASTER) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "15:02" # UTC (20:00 Tucson)
+RUN_TIME = "15:07" # UTC (20:00 Tucson)
 
 # AJUSTES MATEMÁTICOS
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.85 # Memoria exponencial
+DECAY_ALPHA = 0.85 
 SEASON = '2526'         
 HISTORY_FILE = "historial_picks.csv"
 
@@ -47,7 +47,7 @@ class TelegramSniper:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- ROLEX ENGINE STARTED ---", flush=True)
+        print("--- GOLD MASTER ENGINE STARTED ---", flush=True)
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
             print("❌ ERROR: Credenciales faltantes", flush=True)
 
@@ -182,6 +182,7 @@ class TelegramSniper:
                                 elif "1X" in pick and fthg >= ftag: result = "WIN"; pnl = (odds - 1) * 0.5 
                                 elif "X2" in pick and ftag >= fthg: result = "WIN"; pnl = (odds - 1) * 0.5
                                 elif "OVER" in pick and (fthg+ftag) > 2.5: result = "WIN"; pnl = 0.9
+                                elif "BTTS" in pick and (fthg > 0 and ftag > 0): result = "WIN"; pnl = 0.9
                                 
                                 row['Result'] = result; row['Profit'] = round(pnl, 2)
                                 if result == "WIN": wins += 1; profit_units += pnl
@@ -212,11 +213,11 @@ class TelegramSniper:
         
         win_h = np.mean(h_sim > a_sim); win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
-        if (xg_h + xg_a) < 2.40: # Dixon-Coles boost
+        if (xg_h + xg_a) < 2.40: 
             boost = 0.03; draw += boost; win_h -= boost/2; win_a -= boost/2
         
         over25 = np.mean((h_sim + a_sim) > 2.5)
-        btts = np.mean((h_sim > 0) & (a_sim > 0)) # BTTS AÑADIDO
+        btts = np.mean((h_sim > 0) & (a_sim > 0))
         
         return {
             'teams': (rh, ra),
@@ -272,27 +273,29 @@ class TelegramSniper:
                     
                     pick = None; conf = 0.0; pick_type = ""
                     
+                    # --- LÓGICA DE DECISIÓN COMPLETA (CORREGIDA) ---
                     if ph > threshold: pick = "GANA LOCAL"; conf = ph; pick_type="WIN"
                     elif pa > threshold: pick = "GANA VISITA"; conf = pa; pick_type="WIN"
                     elif d1x > 0.83: pick = "1X"; conf = d1x; pick_type="DC"
                     elif dx2 > 0.83: pick = "X2"; conf = dx2; pick_type="DC"
                     elif po > 0.63: pick = "OVER 2.5"; conf = po; pick_type="GOL"
+                    elif pb > 0.63: pick = "BTTS (Ambos Marcan)"; conf = pb; pick_type="BTTS" # <-- GATILLO AGREGADO
                     
                     if pick:
                         found_picks += 1
                         if not header_sent:
-                            self.send_msg(f"🐺 <b>EURO-SNIPER v30</b>\n📅 {today} | 🧬 X-RAY")
+                            self.send_msg(f"🐺 <b>EURO-SNIPER v31</b>\n📅 {today} | 🧬 Gold Master")
                             header_sent = True
 
                         fair_odd = 1/conf
+                        stake_reco = self.calculate_kelly_stake(conf, fair_odd, threshold)
+                        
                         self.log_new_pick(today, LEAGUE_CONFIG[div]['name'], res['teams'][0], res['teams'][1], pick, conf, fair_odd)
 
-                        # Visuales Avanzados
                         f_h = res['form'][0]; f_a = res['form'][1]
                         mom_h = "Excelente" if f_h > 1.1 else ("Bien" if f_h > 1.0 else "Mal")
                         mom_a = "Excelente" if f_a > 1.1 else ("Bien" if f_a > 1.0 else "Mal")
                         
-                        # Kelly Stake visual
                         edge = conf - threshold
                         stake_bar = "🟦⬜⬜ (Min)"
                         if edge > 0.10: stake_bar = "🟦🟦⬜ (Fuerte)"
@@ -302,6 +305,7 @@ class TelegramSniper:
                         if pick_type == "WIN": emoji_pick = "🔥"
                         if pick_type == "DC": emoji_pick = "🛡️"
                         if pick_type == "GOL": emoji_pick = "⚽"
+                        if pick_type == "BTTS": emoji_pick = "🥊"
 
                         msg = (
                             f"🏆 <b>{LEAGUE_CONFIG[div]['name']}</b>\n"
@@ -323,7 +327,8 @@ class TelegramSniper:
                         self.send_msg(msg)
                         time.sleep(1.5)
                     else:
-                        max_prob = max(ph, pa, d1x, dx2)
+                        # CORREGIDO: Ahora mira también Over y BTTS para el rechazo
+                        max_prob = max(ph, pa, d1x, dx2, po, pb)
                         rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: Prob {max_prob*100:.0f}% (Req {threshold*100:.0f}%)")
 
         if found_picks == 0:
@@ -337,7 +342,7 @@ class TelegramSniper:
 
 if __name__ == "__main__":
     bot = TelegramSniper()
-    print(f"🤖 BOT ROLEX EDITION. Hora target: {RUN_TIME} UTC", flush=True)
+    print(f"🤖 BOT GOLD MASTER. Hora target: {RUN_TIME} UTC", flush=True)
     if os.getenv("SELF_TEST", "False") == "True": bot.run_daily_scan()
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
     while True: schedule.run_pending(); time.sleep(60)
