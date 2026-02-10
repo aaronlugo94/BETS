@@ -8,123 +8,87 @@ import schedule
 import os
 from datetime import datetime
 
-# --- CONFIGURACIÓN EURO-SNIPER v22.0 (DEBUG) ---
+# --- CONFIGURACIÓN EURO-SNIPER v25.0 (PRO VISUALS) ---
 
-# Credenciales (Configúralas en Railway -> Variables)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# HORA DE EJECUCIÓN (UTC)
-# 03:00 UTC = 20:00 PM (8 PM) en Tucson (MST)
-RUN_TIME = "03:49"
+# 03:00 UTC = 20:00 PM Tucson (Para recibirlo en la noche)
+RUN_TIME = "04:15"
 
-# AJUSTES DEL MODELO
 SIMULATION_RUNS = 50000 
 FORM_WEIGHT = 0.20      
 SEASON = '2526'         
 
-# HEADERS ROTATIVOS (Para evitar bloqueos de IP en football-data)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
     'Wget/1.20.3 (linux-gnu)'
 ]
 
-LEAGUE_ATLAS = {
-    'E0': '🇬🇧 Premier', 'SP1': '🇪🇸 La Liga', 'I1': '🇮🇹 Serie A', 
-    'D1': '🇩🇪 Bundes', 'F1': '🇫🇷 Ligue 1', 'P1': '🇵🇹 Primeira', 
-    'N1': '🇳🇱 Eredivisie', 'B1': '🇧🇪 Pro League', 'T1': '🇹🇷 Süper Lig'
+LEAGUE_CONFIG = {
+    'E0':  {'name': '🇬🇧 PREMIER LEAGUE', 'tier': 1, 'threshold': 0.60},
+    'SP1': {'name': '🇪🇸 LA LIGA',       'tier': 1, 'threshold': 0.60},
+    'I1':  {'name': '🇮🇹 SERIE A',       'tier': 1, 'threshold': 0.60},
+    'D1':  {'name': '🇩🇪 BUNDESLIGA',    'tier': 1, 'threshold': 0.60},
+    'F1':  {'name': '🇫🇷 LIGUE 1',       'tier': 1, 'threshold': 0.60},
+    'P1':  {'name': '🇵🇹 LIGA PORTUGAL', 'tier': 2, 'threshold': 0.66},
+    'N1':  {'name': '🇳🇱 EREDIVISIE',    'tier': 2, 'threshold': 0.66},
+    'B1':  {'name': '🇧🇪 PRO LEAGUE',    'tier': 2, 'threshold': 0.66},
+    'T1':  {'name': '🇹🇷 SUPER LIG',     'tier': 2, 'threshold': 0.66}
 }
 
 class TelegramSniper:
     def __init__(self):
         self.fixtures = None
         self.history_cache = {} 
-        
-        # Verificación inicial de credenciales
-        print("--- VERIFICACIÓN DE CREDENCIALES ---", flush=True)
-        if not TELEGRAM_TOKEN:
-            print("❌ ERROR CRÍTICO: No has configurado la variable TELEGRAM_TOKEN en Railway.", flush=True)
-        elif len(TELEGRAM_TOKEN) < 10:
-            print(f"⚠️ ADVERTENCIA: El Token parece muy corto o incorrecto ({TELEGRAM_TOKEN}).", flush=True)
-        else:
-            print("✅ Token detectado.", flush=True)
-            
-        if not TELEGRAM_CHAT_ID:
-            print("❌ ERROR CRÍTICO: No has configurado la variable TELEGRAM_CHAT_ID en Railway.", flush=True)
-        else:
-            print(f"✅ Chat ID detectado: {TELEGRAM_CHAT_ID}", flush=True)
-        print("------------------------------------", flush=True)
+        self._check_creds()
+
+    def _check_creds(self):
+        print("--- SYSTEM CHECK ---", flush=True)
+        if not TELEGRAM_TOKEN: print("❌ ERROR: Falta TELEGRAM_TOKEN", flush=True)
+        if not TELEGRAM_CHAT_ID: print("❌ ERROR: Falta TELEGRAM_CHAT_ID", flush=True)
 
     def send_msg(self, text):
-        """Envía mensaje a Telegram con reporte de errores explícito."""
-        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            print("🚫 No se puede enviar mensaje: Faltan credenciales.", flush=True)
-            return
-
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
         
-        print(f"📨 Enviando mensaje a Telegram...", flush=True)
-
-        for attempt in range(3):
+        for i in range(3):
             try:
                 r = requests.post(url, json=payload, timeout=10)
-                if r.status_code == 200: 
-                    print("   ✅ Mensaje entregado correctamente.", flush=True)
-                    return # Éxito, salimos
-                else:
-                    # AQUÍ ESTÁ EL ERROR: Imprimimos qué dice Telegram
-                    print(f"   ❌ Error Telegram (Código {r.status_code}): {r.text}", flush=True)
-                    # Si es error 401 (Token mal) o 400 (Chat ID mal), no reintentamos porque fallará igual
-                    if r.status_code in [400, 401, 404]:
-                        return 
-            except Exception as e:
-                print(f"   ❌ Excepción de conexión: {e}", flush=True)
-                time.sleep(2)
-        
-        print("   ⛔ Fallaron todos los intentos de envío.", flush=True)
+                if r.status_code == 200: return
+                if r.status_code in [400, 401, 403]: 
+                    print(f"❌ Error Telegram: {r.status_code} - {r.text}", flush=True)
+                    return
+            except: time.sleep(2)
 
     def load_fixtures(self):
-        """Descarga datos con TIMEOUT ESTRICTO y HEADERS."""
-        print(f"[SYSTEM] Descargando calendario...", flush=True)
-        
-        urls = [
-            "https://www.football-data.co.uk/fixtures.csv",
-            "http://www.football-data.co.uk/fixtures.csv"
-        ]
+        print(f"[SYSTEM] Conectando a base de datos...", flush=True)
+        urls = ["https://www.football-data.co.uk/fixtures.csv", "http://www.football-data.co.uk/fixtures.csv"]
         
         for i, url in enumerate(urls):
             try:
-                # Headers aleatorios
                 headers = {'User-Agent': USER_AGENTS[i % len(USER_AGENTS)]}
                 r = requests.get(url, headers=headers, timeout=(5, 10))
                 r.raise_for_status()
-                
                 try: content = r.content.decode('utf-8-sig')
                 except: content = r.content.decode('latin-1')
-                
                 self.fixtures = pd.read_csv(io.StringIO(content))
-                
                 if not self.fixtures.empty:
                     self.fixtures.rename(columns={self.fixtures.columns[0]: 'Div'}, inplace=True)
                     self.fixtures.columns = self.fixtures.columns.str.strip()
                     self.fixtures = self.fixtures.dropna(subset=['Div'])
                     self.fixtures['Date'] = pd.to_datetime(self.fixtures['Date'], dayfirst=True, errors='coerce')
-                    print(f"   ✅ Datos cargados: {len(self.fixtures)} filas.", flush=True)
+                    print(f"✅ Calendario actualizado: {len(self.fixtures)} partidos.", flush=True)
                     return True
-                    
-            except Exception as e:
-                print(f"   ⚠️ Intento {i+1} fallido ({url}): {e}", flush=True)
-                time.sleep(2)
-        
-        print("⛔ ERROR CRÍTICO: No se pudo descargar el calendario.", flush=True)
+            except: time.sleep(2)
+        print("⛔ ERROR: Fallo en descarga de datos.", flush=True)
         return False
 
     def get_league_data(self, div):
         if div in self.history_cache: return self.history_cache[div]
         url = f"https://www.football-data.co.uk/mmz4281/{SEASON}/{div}.csv"
-        
         for i in range(2):
             try:
                 headers = {'User-Agent': USER_AGENTS[0]}
@@ -184,7 +148,7 @@ class TelegramSniper:
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
         return {
-            'teams': f"{rh} vs {ra}",
+            'teams': (rh, ra),
             'xg': (xg_h, xg_a),
             'probs': (win_h, draw, win_a),
             'goals': (over25, btts),
@@ -194,21 +158,18 @@ class TelegramSniper:
 
     def run_daily_scan(self):
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Ejecutando escaneo para fecha: {today}", flush=True)
+        print(f"🚀 Iniciando análisis: {today}", flush=True)
         
         if not self.load_fixtures():
-            self.send_msg(f"⚠️ <b>Error Crítico:</b> El servidor de datos no responde para {today}.")
+            self.send_msg(f"⚠️ Error descarga: {today}")
             return
 
         try: target = pd.to_datetime(today, dayfirst=True)
         except: return
         
         daily = self.fixtures[self.fixtures['Date'] == target]
-        
         if daily.empty:
-            msg = f"💤 <b>Reporte {today}:</b> No hay partidos en la lista para hoy. El bot sigue activo."
-            print("No hay partidos hoy.", flush=True)
-            self.send_msg(msg)
+            self.send_msg(f"💤 <b>{today}:</b> Sin partidos Elite programados.")
             return
 
         found_picks = 0
@@ -216,59 +177,78 @@ class TelegramSniper:
 
         for idx, row in daily.iterrows():
             div = row['Div']
-            if div in LEAGUE_ATLAS:
+            if div in LEAGUE_CONFIG:
                 res = self.analyze_match(row['HomeTeam'], row['AwayTeam'], div)
                 if res:
                     ph, px, pa = res['probs']; po, pb = res['goals']; d1x, dx2 = res['dc']
                     
+                    threshold = LEAGUE_CONFIG[div]['threshold']
                     pick = None; conf = 0.0
+                    pick_type = ""
                     
-                    if ph > 0.60: pick = "GANA LOCAL"; conf = ph
-                    elif pa > 0.60: pick = "GANA VISITA"; conf = pa
-                    elif d1x > 0.83: pick = "1X (Local/Empate)"; conf = d1x
-                    elif dx2 > 0.83: pick = "X2 (Visita/Empate)"; conf = dx2
-                    elif po > 0.62: pick = "OVER 2.5 GOLES"; conf = po
-                    elif pb > 0.62: pick = "AMBOS MARCAN (BTTS)"; conf = pb
+                    # LOGICA X-RAY ESTRICTA
+                    if ph > threshold: pick = "GANA LOCAL (1)"; conf = ph; pick_type = "WIN"
+                    elif pa > threshold: pick = "GANA VISITA (2)"; conf = pa; pick_type = "WIN"
+                    elif d1x > 0.83: pick = "LOCAL O EMPATE (1X)"; conf = d1x; pick_type = "SAFE"
+                    elif dx2 > 0.83: pick = "VISITA O EMPATE (X2)"; conf = dx2; pick_type = "SAFE"
+                    elif po > 0.63: pick = "OVER 2.5 GOLES"; conf = po; pick_type = "GOALS"
                     
                     if pick:
                         found_picks += 1
                         if not header_sent:
-                            self.send_msg(f"🐺 <b>EURO-SNIPER NIGHT OPS</b>\n📅 Picks para: {today}\n🔎 Analizando mercado...")
+                            self.send_msg(f"🐺 <b>EURO-SNIPER PRO</b>\n📅 Reporte: {today}")
                             header_sent = True
 
                         fair_odd = 1/conf
-                        ic_h = "🔥" if res['form'][0] > 1.05 else ("❄️" if res['form'][0] < 0.95 else "➖")
-                        ic_a = "🔥" if res['form'][1] > 1.05 else ("❄️" if res['form'][1] < 0.95 else "➖")
-                        icon_verdict = "💎" if conf > 0.65 else "✅"
+                        
+                        # Stake Visual
+                        gap = conf - threshold
+                        stake_bar = "🟦⬜⬜ (1/3)"
+                        if gap > 0.10: stake_bar = "🟦🟦⬜ (2/3)"
+                        if gap > 0.20: stake_bar = "🟦🟦🟦 (MAX)"
 
+                        # Forma Visual
+                        f_h = res['form'][0]; f_a = res['form'][1]
+                        txt_h = "Excelente" if f_h > 1.1 else ("Bien" if f_h > 1.0 else ("Regular" if f_h > 0.9 else "Pobre"))
+                        txt_a = "Excelente" if f_a > 1.1 else ("Bien" if f_a > 1.0 else ("Regular" if f_a > 0.9 else "Pobre"))
+                        
+                        # Emojis PICK
+                        emoji_pick = "👉"
+                        if pick_type == "WIN": emoji_pick = "🔥"
+                        if pick_type == "SAFE": emoji_pick = "🛡️"
+                        if pick_type == "GOALS": emoji_pick = "⚽"
+
+                        # MENSAJE PREMIUM
                         msg = (
-                            f"<b>⚽ {res['teams'].upper()}</b>\n"
-                            f"🏆 {LEAGUE_ATLAS[div]}\n"
-                            f"📊 Forma: {ic_h} vs {ic_a}\n"
-                            f"📈 xG: {res['xg'][0]:.2f} - {res['xg'][1]:.2f}\n"
-                            f"------------------\n"
-                            f"{icon_verdict} <b>{pick}</b> ({conf*100:.1f}%)\n"
-                            f"🎯 Fair Odd: <b>@{fair_odd:.2f}</b>"
+                            f"🏆 <b>{LEAGUE_CONFIG[div]['name']}</b>\n"
+                            f"<b>{res['teams'][0].upper()}</b> vs <b>{res['teams'][1].upper()}</b>\n"
+                            f"───────────────\n"
+                            f"⚡ <i>Momentum:</i> {txt_h} vs {txt_a}\n"
+                            f"📉 <i>xG Sim:</i> {res['xg'][0]:.2f} - {res['xg'][1]:.2f}\n"
+                            f"───────────────\n"
+                            f"📊 <b>DATOS DE MERCADO:</b>\n"
+                            f"• 1X2: {ph*100:.0f}% / {px*100:.0f}% / {pa*100:.0f}%\n"
+                            f"• DO: 1X {d1x*100:.0f}% | X2 {dx2*100:.0f}%\n"
+                            f"• Gol: Ov {po*100:.0f}% | Un {(1-po)*100:.0f}%\n"
+                            f"───────────────\n"
+                            f"🎯 <b>VEREDICTO ALGORÍTMICO:</b>\n"
+                            f"{emoji_pick} <b>{pick}</b>\n\n"
+                            f"⚖️ Fair Odd: <b>@{fair_odd:.2f}</b>\n"
+                            f"💰 Stake: <b>{stake_bar}</b>"
                         )
                         self.send_msg(msg)
                         time.sleep(1.5)
 
         if found_picks == 0:
-            self.send_msg(f"⚠️ <b>Reporte {today}:</b> Hay partidos, pero NINGUNO cumple los criterios de seguridad (>60%).")
+            self.send_msg(f"⚠️ <b>{today}:</b> Filtro estricto activado. Ningún partido ofrece valor suficiente hoy.")
         else:
-            self.send_msg(f"🏁 <b>Fin del Reporte.</b> {found_picks} oportunidades detectadas.\n⚠️ <i>Nota: Revisa alineaciones.</i>")
-            print(f"Reporte enviado con {found_picks} picks.", flush=True)
+            self.send_msg(f"🏁 <b>Fin del reporte.</b>")
 
 if __name__ == "__main__":
     bot = TelegramSniper()
+    print(f"🤖 BOT PRO VISUALS. Hora target: {RUN_TIME} UTC", flush=True)
     
-    print(f"🤖 BOT NIGHT OPS INICIADO.", flush=True)
-    print(f"🕒 Hora objetivo: {RUN_TIME} UTC (20:00 Tucson)", flush=True)
-    
-    # Auto-test: Ejecuta una vez al arrancar para verificar Telegram
-    # (Luego entra en modo reposo hasta las 3 AM UTC)
     if os.getenv("SELF_TEST", "False") == "True":
-        print("🔧 MODO PRUEBA ACTIVADO: Ejecutando escaneo ahora...", flush=True)
         bot.run_daily_scan()
 
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
