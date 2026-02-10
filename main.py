@@ -8,22 +8,22 @@ import schedule
 import os
 from datetime import datetime
 
-# --- CONFIGURACIÓN EURO-SNIPER v21.1 ---
+# --- CONFIGURACIÓN EURO-SNIPER v22.0 (DEBUG) ---
 
 # Credenciales (Configúralas en Railway -> Variables)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "PON_TU_TOKEN_AQUI_SI_ES_LOCAL")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "PON_TU_CHAT_ID_AQUI")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # HORA DE EJECUCIÓN (UTC)
 # 03:00 UTC = 20:00 PM (8 PM) en Tucson (MST)
-RUN_TIME = "03:34"
+RUN_TIME = "03:37"
 
 # AJUSTES DEL MODELO
 SIMULATION_RUNS = 50000 
 FORM_WEIGHT = 0.20      
 SEASON = '2526'         
 
-# HEADERS ROTATIVOS (Para evitar bloqueos de IP)
+# HEADERS ROTATIVOS (Para evitar bloqueos de IP en football-data)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
@@ -40,68 +40,83 @@ class TelegramSniper:
     def __init__(self):
         self.fixtures = None
         self.history_cache = {} 
+        
+        # Verificación inicial de credenciales
+        print("--- VERIFICACIÓN DE CREDENCIALES ---", flush=True)
+        if not TELEGRAM_TOKEN:
+            print("❌ ERROR CRÍTICO: No has configurado la variable TELEGRAM_TOKEN en Railway.", flush=True)
+        elif len(TELEGRAM_TOKEN) < 10:
+            print(f"⚠️ ADVERTENCIA: El Token parece muy corto o incorrecto ({TELEGRAM_TOKEN}).", flush=True)
+        else:
+            print("✅ Token detectado.", flush=True)
+            
+        if not TELEGRAM_CHAT_ID:
+            print("❌ ERROR CRÍTICO: No has configurado la variable TELEGRAM_CHAT_ID en Railway.", flush=True)
+        else:
+            print(f"✅ Chat ID detectado: {TELEGRAM_CHAT_ID}", flush=True)
+        print("------------------------------------", flush=True)
 
     def send_msg(self, text):
-        """Envía mensaje a Telegram con reintentos."""
+        """Envía mensaje a Telegram con reporte de errores explícito."""
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            print("⚠️ Faltan credenciales de Telegram.", flush=True)
+            print("🚫 No se puede enviar mensaje: Faltan credenciales.", flush=True)
             return
 
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
         
-        for _ in range(3):
+        print(f"📨 Enviando mensaje a Telegram...", flush=True)
+
+        for attempt in range(3):
             try:
                 r = requests.post(url, json=payload, timeout=10)
-                if r.status_code == 200: break
+                if r.status_code == 200: 
+                    print("   ✅ Mensaje entregado correctamente.", flush=True)
+                    return # Éxito, salimos
+                else:
+                    # AQUÍ ESTÁ EL ERROR: Imprimimos qué dice Telegram
+                    print(f"   ❌ Error Telegram (Código {r.status_code}): {r.text}", flush=True)
+                    # Si es error 401 (Token mal) o 400 (Chat ID mal), no reintentamos porque fallará igual
+                    if r.status_code in [400, 401, 404]:
+                        return 
             except Exception as e:
-                print(f"Error enviando Telegram: {e}", flush=True)
+                print(f"   ❌ Excepción de conexión: {e}", flush=True)
                 time.sleep(2)
+        
+        print("   ⛔ Fallaron todos los intentos de envío.", flush=True)
 
     def load_fixtures(self):
-        """
-        Descarga datos con TIMEOUT ESTRICTO para evitar cuelgues de 7 minutos.
-        """
-        print(f"[SYSTEM] Iniciando descarga de calendario...", flush=True)
+        """Descarga datos con TIMEOUT ESTRICTO y HEADERS."""
+        print(f"[SYSTEM] Descargando calendario...", flush=True)
         
-        # URLs alternativas (HTTP vs HTTPS a veces ayuda con bloqueos)
         urls = [
             "https://www.football-data.co.uk/fixtures.csv",
             "http://www.football-data.co.uk/fixtures.csv"
         ]
         
         for i, url in enumerate(urls):
-            print(f"   ➡️ Intento {i+1}: Conectando a {url}...", flush=True)
-            
             try:
-                # TIMEOUT: (5 seg conectar, 15 seg leer). Si tarda más, corta.
+                # Headers aleatorios
                 headers = {'User-Agent': USER_AGENTS[i % len(USER_AGENTS)]}
-                r = requests.get(url, headers=headers, timeout=(5, 15))
+                r = requests.get(url, headers=headers, timeout=(5, 10))
                 r.raise_for_status()
                 
-                print("   ✅ Conexión establecida. Procesando CSV...", flush=True)
-                
-                # Decodificación segura
                 try: content = r.content.decode('utf-8-sig')
                 except: content = r.content.decode('latin-1')
                 
                 self.fixtures = pd.read_csv(io.StringIO(content))
                 
-                # Limpieza de datos
                 if not self.fixtures.empty:
                     self.fixtures.rename(columns={self.fixtures.columns[0]: 'Div'}, inplace=True)
                     self.fixtures.columns = self.fixtures.columns.str.strip()
                     self.fixtures = self.fixtures.dropna(subset=['Div'])
                     self.fixtures['Date'] = pd.to_datetime(self.fixtures['Date'], dayfirst=True, errors='coerce')
-                    print(f"   ✅ Datos cargados: {len(self.fixtures)} partidos.", flush=True)
+                    print(f"   ✅ Datos cargados: {len(self.fixtures)} filas.", flush=True)
                     return True
                     
-            except requests.exceptions.Timeout:
-                print(f"   ❌ Timeout: El servidor tardó demasiado. Reintentando...", flush=True)
             except Exception as e:
-                print(f"   ❌ Error en intento {i+1}: {e}", flush=True)
-            
-            time.sleep(3) # Espera antes de reintentar
+                print(f"   ⚠️ Intento {i+1} fallido ({url}): {e}", flush=True)
+                time.sleep(2)
         
         print("⛔ ERROR CRÍTICO: No se pudo descargar el calendario.", flush=True)
         return False
@@ -110,17 +125,14 @@ class TelegramSniper:
         if div in self.history_cache: return self.history_cache[div]
         url = f"https://www.football-data.co.uk/mmz4281/{SEASON}/{div}.csv"
         
-        # Reintentos para datos históricos
         for i in range(2):
             try:
                 headers = {'User-Agent': USER_AGENTS[0]}
                 r = requests.get(url, headers=headers, timeout=(5, 10))
-                
                 try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
                 except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
                 df = df.dropna(subset=['FTHG', 'FTAG'])
                 
-                # Form Analysis
                 team_stats = {}
                 all_teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
                 for team in all_teams:
@@ -146,8 +158,7 @@ class TelegramSniper:
                 data_pack = {'stats': stats.fillna(1.0), 'avgs': {'h': avg_h, 'a': avg_a}, 'teams': stats.index.tolist(), 'details': team_stats}
                 self.history_cache[div] = data_pack
                 return data_pack
-            except:
-                time.sleep(1)
+            except: time.sleep(1)
         return None
 
     def find_team(self, team, team_list):
@@ -182,12 +193,11 @@ class TelegramSniper:
         }
 
     def run_daily_scan(self):
-        # Fecha del SERVIDOR (Cuando son las 20:00 en Tucson, en el server ya es mañana o madrugada)
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Ejecutando escaneo para fecha: {today}", flush=True)
         
         if not self.load_fixtures():
-            self.send_msg(f"⚠️ <b>Error Crítico:</b> El servidor de datos no responde para la fecha {today}.")
+            self.send_msg(f"⚠️ <b>Error Crítico:</b> El servidor de datos no responde para {today}.")
             return
 
         try: target = pd.to_datetime(today, dayfirst=True)
@@ -196,8 +206,9 @@ class TelegramSniper:
         daily = self.fixtures[self.fixtures['Date'] == target]
         
         if daily.empty:
-            self.send_msg(f"💤 <b>Reporte {today}:</b> No hay partidos programados hoy. El bot sigue activo.")
-            print("No hay partidos. Aviso enviado.", flush=True)
+            msg = f"💤 <b>Reporte {today}:</b> No hay partidos en la lista para hoy. El bot sigue activo."
+            print("No hay partidos hoy.", flush=True)
+            self.send_msg(msg)
             return
 
         found_picks = 0
@@ -212,7 +223,6 @@ class TelegramSniper:
                     
                     pick = None; conf = 0.0
                     
-                    # LOGICA DE SELECCIÓN DE VALOR
                     if ph > 0.60: pick = "GANA LOCAL"; conf = ph
                     elif pa > 0.60: pick = "GANA VISITA"; conf = pa
                     elif d1x > 0.83: pick = "1X (Local/Empate)"; conf = d1x
@@ -241,25 +251,25 @@ class TelegramSniper:
                             f"🎯 Fair Odd: <b>@{fair_odd:.2f}</b>"
                         )
                         self.send_msg(msg)
-                        time.sleep(1) # Pausa anti-spam
+                        time.sleep(1.5)
 
         if found_picks == 0:
             self.send_msg(f"⚠️ <b>Reporte {today}:</b> Hay partidos, pero NINGUNO cumple los criterios de seguridad (>60%).")
-            print("Escaneo finalizado sin picks.", flush=True)
         else:
             self.send_msg(f"🏁 <b>Fin del Reporte.</b> {found_picks} oportunidades detectadas.\n⚠️ <i>Nota: Revisa alineaciones.</i>")
-            print(f"Escaneo finalizado con {found_picks} picks.", flush=True)
+            print(f"Reporte enviado con {found_picks} picks.", flush=True)
 
-# --- BUCLE DE EJECUCIÓN (RAILWAY) ---
 if __name__ == "__main__":
     bot = TelegramSniper()
     
     print(f"🤖 BOT NIGHT OPS INICIADO.", flush=True)
     print(f"🕒 Hora objetivo: {RUN_TIME} UTC (20:00 Tucson)", flush=True)
     
-    # Auto-test inmediato al desplegar (Opcional, para que veas si funciona YA)
-    # Si quieres que se ejecute una vez al subirlo, descomenta la siguiente línea:
-    bot.run_daily_scan()
+    # Auto-test: Ejecuta una vez al arrancar para verificar Telegram
+    # (Luego entra en modo reposo hasta las 3 AM UTC)
+    if os.getenv("SELF_TEST", "False") == "True":
+        print("🔧 MODO PRUEBA ACTIVADO: Ejecutando escaneo ahora...", flush=True)
+        bot.run_daily_scan()
 
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
     
