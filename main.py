@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "15:42" # UTC (20:00 Tucson)
+RUN_TIME = "02:45" # UTC (20:00 Tucson)
 
 # AJUSTES MATEMÁTICOS
 SIMULATION_RUNS = 100000 
