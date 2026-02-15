@@ -9,7 +9,7 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v52.0 (OMNI-HYBRID MASTER) ---
+# --- CONFIGURACIÓN EURO-SNIPER v53.0 (OMNI-HYBRID MASTER) ---
 
 try:
     from google import genai
@@ -18,11 +18,12 @@ except ImportError:
     GEMINI_AVAILABLE = False
     print("⚠️ Gemini no detectado. Modo Matemático Puro.")
 
+# --- API KEYS (Desde Variables de Entorno) ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "06:14" 
+RUN_TIME = "09:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -69,7 +70,7 @@ class OmniHybridBot:
             except: pass
 
     def _check_creds(self):
-        print("--- OMNI-HYBRID ENGINE v52 STARTED ---", flush=True)
+        print("--- OMNI-HYBRID ENGINE v53 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -115,35 +116,53 @@ class OmniHybridBot:
 
     # --- GEMINI: ANÁLISIS GLOBAL FINAL ---
     def generate_final_summary(self):
-        if not self.ai_client or not self.daily_picks_buffer: return
+        # 1. Diagnóstico de fallo inicial
+        if not self.ai_client:
+            self.send_msg("⚠️ <b>Debug:</b> No se pudo generar el resumen final. (Gemini Client no conectado o sin API Key).")
+            return
+        
+        if not self.daily_picks_buffer:
+            return
+
+        # 2. Aviso de "Pensando"
+        self.send_msg("⏳ <b>El Jefe de Estrategia (AI) está analizando los datos...</b>")
 
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        ACTÚA COMO UN EXPERTO ESTRATEGA DE APUESTAS DEPORTIVAS.
+        ACTÚA COMO UN EXPERTO ESTRATEGA DE APUESTAS DEPORTIVAS (TIPSTER PRO).
         
-        Aquí tienes la lista de "Value Bets" detectadas hoy por mi algoritmo matemático:
+        Analiza la siguiente cartera de apuestas detectada hoy por mi algoritmo matemático:
         ---
         {picks_text}
         ---
         
-        TU MISIÓN (Resumen Final):
-        1. 🏆 **EL BANKER:** ¿Cuál es la apuesta más segura del día? (Alta probabilidad + Valor).
-        2. 💰 **LA JOYA DE VALOR:** ¿Cuál tiene el EV más interesante sin ser una locura imposible?
-        3. ⚠️ **ADVERTENCIA:** Si ves algún patrón peligroso (ej: muchos visitantes favoritos), avisa.
+        TU MISIÓN (Resumen Ejecutivo):
+        1. 💎 **LA JOYITA:** Elige el pick con mejor relación Riesgo/Beneficio. Explica por qué brevemente.
+        2. 🛡️ **EL BANKER:** La apuesta más segura del día para combinar o stake alto.
+        3. 💣 **ALERTA DE RIESGO:** ¿Ves algún partido "trampa" donde el favorito podría fallar?
         
-        FORMATO DE SALIDA (HTML para Telegram):
-        Usar encabezado: 🧠 <b>RESUMEN DEL JEFE DE ESTRATEGIA</b>
+        FORMATO DE SALIDA (HTML Limpio para Telegram):
+        Usa emojis. Sé breve y directo. No uses Markdown, solo <b>negrita</b>.
+        Empieza con: 🧠 <b>RESUMEN ESTRATÉGICO DEL DÍA</b>
         """
         
         try:
+            # Intentamos generar con un timeout seguro
             response = self.ai_client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=prompt
             )
-            self.send_msg(response.text)
+            
+            if response.text:
+                self.send_msg(response.text)
+            else:
+                self.send_msg("⚠️ Error: Gemini devolvió una respuesta vacía.")
+                
         except Exception as e:
-            print(f"Error Gemini Final: {e}")
+            error_msg = f"❌ <b>Error generando resumen IA:</b>\n{str(e)}"
+            self.send_msg(error_msg)
+            print(error_msg, flush=True)
 
     # --- MOTOR MATEMÁTICO ---
     def calculate_xg_stats(self, df, team):
@@ -224,7 +243,7 @@ class OmniHybridBot:
             'ah_a': (ah_a_m15, ah_a_p15)
         }
 
-    # --- SELECCIÓN DEL MEJOR PICK (AJUSTADA PARA SEGURIDAD) ---
+    # --- SELECCIÓN DEL MEJOR PICK (CEREBRO OMNI) ---
     def find_best_value(self, sim, odds_row):
         candidates = []
         
@@ -232,7 +251,7 @@ class OmniHybridBot:
             if odd < 1.05: return
             ev = (prob * odd) - 1
             # FÓRMULA DE CALIDAD: EV * Probabilidad al cuadrado
-            # Esto mata las cuotas 11.00 con baja probabilidad
+            # Esto mata las cuotas 11.00 con baja probabilidad y prioriza la seguridad
             score = ev * (prob * prob) 
             if ev > MIN_EV_THRESHOLD:
                 candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
@@ -247,7 +266,7 @@ class OmniHybridBot:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
             
-            # Mercados derivados (DNB, DC)
+            # Mercados derivados (DNB, DC) - Estimación con margen
             o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93
             o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
             add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
@@ -268,6 +287,7 @@ class OmniHybridBot:
             add("BTTS SÍ", "BTTS", sim['goals'][1], o_btts_y)
 
         if not candidates: return None
+        # Ordenamos por SCORE para obtener el mejor equilibrio
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0]
 
@@ -285,18 +305,27 @@ class OmniHybridBot:
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
         try:
             r = requests.get(url_fixt, headers={'User-Agent': USER_AGENTS[0]}, timeout=20)
-            if r.status_code!=200: return
+            if r.status_code!=200: 
+                self.send_msg(f"⚠️ Error descarga CSV: Status {r.status_code}")
+                return
             try: content = r.content.decode('utf-8-sig')
             except: content = r.content.decode('latin-1')
             df = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
             df.columns = df.columns.str.strip().str.replace('ï»¿', '')
             df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-        except: return
+        except Exception as e:
+            self.send_msg(f"⚠️ Error crítico CSV: {e}")
+            return
 
         target_date = pd.to_datetime(today, dayfirst=True)
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
+        if daily.empty:
+            self.send_msg(f"💤 <b>{today}:</b> No se encontraron partidos en la base de datos.")
+            return
+
         bets_found = 0
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos para hoy...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -357,17 +386,17 @@ class OmniHybridBot:
                 
                 self.send_msg(msg)
                 
-                # Guardar info para Gemini (Resumen Final)
-                self.daily_picks_buffer.append(f"- {rh} vs {ra}: PICK {best_bet['pick']} @ {best_bet['odd']:.2f} (EV +{best_bet['ev']*100:.0f}%)")
+                # Guardar en buffer para Gemini (Resumen Final)
+                self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], "PENDING", 0])
 
         if bets_found > 0:
-            # LLAMADA AL JEFE DE ESTRATEGIA (Gemini)
+            # LLAMADA EXPLÍCITA AL FINAL (Con reporte de errores)
             self.generate_final_summary()
         else:
-            self.send_msg("🧹 Sin oportunidades claras (Filtro de Seguridad Activado).")
+            self.send_msg("🧹 Barrido completado: Sin oportunidades de alto valor hoy.")
 
 if __name__ == "__main__":
     bot = OmniHybridBot()
