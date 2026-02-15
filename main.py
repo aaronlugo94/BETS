@@ -7,23 +7,18 @@ import time
 import schedule
 import os
 import csv
+import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v53.0 (OMNI-HYBRID MASTER) ---
+# --- CONFIGURACIÓN EURO-SNIPER v54.0 (DIRECT REST API) ---
 
-try:
-    from google import genai
-    GEMINI_AVAILABLE = True
-except ImportError:
-    GEMINI_AVAILABLE = False
-    print("⚠️ Gemini no detectado. Modo Matemático Puro.")
-
-# --- API KEYS (Desde Variables de Entorno) ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+# 1. API KEYS (Rellena aquí si no usas variables de entorno)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "") 
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# Pega tu key aquí dentro de las comillas si os.getenv no te funciona
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "") 
 
-RUN_TIME = "06:27" 
+RUN_TIME = "09:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -58,19 +53,14 @@ class OmniHybridBot:
     def __init__(self):
         self.fixtures = None
         self.history_cache = {} 
-        self.daily_picks_buffer = [] # Memoria para el reporte final
+        self.daily_picks_buffer = [] 
         self._check_creds()
         self._init_history_file()
-        
-        self.ai_client = None
-        if GEMINI_AVAILABLE and GEMINI_API_KEY:
-            try:
-                self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                print("🧠 Gemini AI: CONECTADO (Modo Jefe de Estrategia)", flush=True)
-            except: pass
 
     def _check_creds(self):
-        print("--- OMNI-HYBRID ENGINE v53 STARTED ---", flush=True)
+        print("--- OMNI-HYBRID v54 (REST API) STARTED ---", flush=True)
+        if not GEMINI_API_KEY:
+            print("⚠️ ADVERTENCIA: No se detectó GEMINI_API_KEY. La IA no funcionará.", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -80,89 +70,85 @@ class OmniHybridBot:
 
     def send_msg(self, text):
         if not TELEGRAM_TOKEN: 
-            print(f"[MOCK MSG] {text}")
+            print(f"[TELEGRAM MOCK] {text}")
             return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-        try: requests.post(url, json=payload, timeout=10)
-        except: pass
+        try: 
+            r = requests.post(url, json=payload, timeout=10)
+            if r.status_code != 200:
+                print(f"Error Telegram: {r.text}", flush=True)
+        except Exception as e: 
+            print(f"Excepción Telegram: {e}", flush=True)
 
     def dec_to_am(self, decimal_odd):
         if decimal_odd <= 1.01: return "-10000"
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    # --- FUNCIONES DE FORMA (🔥/🧊) ---
-    def get_team_form_icon(self, df, team):
-        # Busca los últimos 5 partidos
-        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
-        if len(matches) == 0: return "➡️"
+    # --- NUEVO MOTOR GEMINI (SIN LIBRERÍAS EXTERNAS) ---
+    def call_gemini_api(self, prompt_text):
+        """Llamada directa a la API REST de Google para evitar errores de librería"""
+        if not GEMINI_API_KEY: return None
         
-        points = 0
-        possible = len(matches) * 3
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt_text}]
+            }]
+        }
         
-        for _, row in matches.iterrows():
-            if row['HomeTeam'] == team:
-                if row['FTHG'] > row['FTAG']: points += 3
-                elif row['FTHG'] == row['FTAG']: points += 1
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                return data['candidates'][0]['content']['parts'][0]['text']
             else:
-                if row['FTAG'] > row['FTHG']: points += 3
-                elif row['FTAG'] == row['FTHG']: points += 1
-        
-        pct = points / possible
-        if pct >= 0.7: return "🔥"
-        if pct <= 0.3: return "🧊"
-        return "➡️"
+                print(f"⚠️ Error Gemini API: {response.status_code} - {response.text}", flush=True)
+                return f"⚠️ Error IA: {response.status_code}"
+        except Exception as e:
+            print(f"⚠️ Excepción Gemini: {e}", flush=True)
+            return None
 
-    # --- GEMINI: ANÁLISIS GLOBAL FINAL ---
+    # --- ANÁLISIS FINAL (EL JEFE DE ESTRATEGIA) ---
     def generate_final_summary(self):
-        # 1. Diagnóstico de fallo inicial
-        if not self.ai_client:
-            self.send_msg("⚠️ <b>Debug:</b> No se pudo generar el resumen final. (Gemini Client no conectado o sin API Key).")
-            return
-        
-        if not self.daily_picks_buffer:
-            return
+        if not self.daily_picks_buffer: return
 
-        # 2. Aviso de "Pensando"
-        self.send_msg("⏳ <b>El Jefe de Estrategia (AI) está analizando los datos...</b>")
+        self.send_msg("⏳ <b>El Jefe de Estrategia está revisando los picks...</b>")
 
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        ACTÚA COMO UN EXPERTO ESTRATEGA DE APUESTAS DEPORTIVAS (TIPSTER PRO).
+        ERES EL JEFE DE ESTRATEGIA DE UN FONDO DE APUESTAS DEPORTIVAS.
         
-        Analiza la siguiente cartera de apuestas detectada hoy por mi algoritmo matemático:
+        Analiza esta lista de oportunidades detectadas hoy:
         ---
         {picks_text}
         ---
         
-        TU MISIÓN (Resumen Ejecutivo):
-        1. 💎 **LA JOYITA:** Elige el pick con mejor relación Riesgo/Beneficio. Explica por qué brevemente.
-        2. 🛡️ **EL BANKER:** La apuesta más segura del día para combinar o stake alto.
-        3. 💣 **ALERTA DE RIESGO:** ¿Ves algún partido "trampa" donde el favorito podría fallar?
+        GENERA UN RESUMEN EJECUTIVO (Formato HTML Telegram):
         
-        FORMATO DE SALIDA (HTML Limpio para Telegram):
-        Usa emojis. Sé breve y directo. No uses Markdown, solo <b>negrita</b>.
-        Empieza con: 🧠 <b>RESUMEN ESTRATÉGICO DEL DÍA</b>
+        🧠 <b>RESUMEN ESTRATÉGICO</b>
+        
+        🏆 <b>EL BANKER (Más Seguro):</b>
+        [Elige uno. Explica por qué es el más sólido para stake alto]
+        
+        💎 <b>LA JOYA (Mejor Valor):</b>
+        [Elige el de mejor relación Riesgo/Cuota. No necesariamente el más seguro, sino el más rentable a largo plazo]
+        
+        💣 <b>ZONA DE RIESGO:</b>
+        [Advierte sobre 1 partido que parezca trampa o muy volátil]
+        
+        📝 <b>Conclusión:</b> [1 frase motivacional o técnica]
         """
         
-        try:
-            # Intentamos generar con un timeout seguro
-            response = self.ai_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=prompt
-            )
-            
-            if response.text:
-                self.send_msg(response.text)
-            else:
-                self.send_msg("⚠️ Error: Gemini devolvió una respuesta vacía.")
-                
-        except Exception as e:
-            error_msg = f"❌ <b>Error generando resumen IA:</b>\n{str(e)}"
-            self.send_msg(error_msg)
-            print(error_msg, flush=True)
+        ai_response = self.call_gemini_api(prompt)
+        
+        if ai_response:
+            self.send_msg(ai_response)
+        else:
+            self.send_msg("❌ <b>Error:</b> El Jefe de Estrategia no pudo conectar (API Error).")
 
     # --- MOTOR MATEMÁTICO ---
     def calculate_xg_stats(self, df, team):
@@ -181,6 +167,22 @@ class OmniHybridBot:
             
         avg_sot = w_sot / total_w; avg_goals = w_goals / total_w
         return (avg_sot * 0.40) + (avg_goals * 0.60)
+
+    def get_team_form_icon(self, df, team):
+        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
+        if len(matches) == 0: return "➡️"
+        points = 0; possible = len(matches) * 3
+        for _, row in matches.iterrows():
+            if row['HomeTeam'] == team:
+                if row['FTHG'] > row['FTAG']: points += 3
+                elif row['FTHG'] == row['FTAG']: points += 1
+            else:
+                if row['FTAG'] > row['FTHG']: points += 3
+                elif row['FTAG'] == row['FTHG']: points += 1
+        pct = points / possible
+        if pct >= 0.7: return "🔥"; 
+        if pct <= 0.3: return "🧊"; 
+        return "➡️"
 
     def get_league_data(self, div):
         if div in self.history_cache: return self.history_cache[div]
@@ -209,7 +211,6 @@ class OmniHybridBot:
         s = league_data['strength']
         avg_g = league_data['avg_g'] / 2
         
-        # xG Clamping para evitar locuras de 7 goles
         xg_h = min(3.2, s.get(home, 1.0) * avg_g * 1.20)
         xg_a = min(3.2, s.get(away, 1.0) * avg_g)
         
@@ -243,20 +244,16 @@ class OmniHybridBot:
             'ah_a': (ah_a_m15, ah_a_p15)
         }
 
-    # --- SELECCIÓN DEL MEJOR PICK (CEREBRO OMNI) ---
     def find_best_value(self, sim, odds_row):
         candidates = []
         
         def add(name, market, prob, odd):
             if odd < 1.05: return
             ev = (prob * odd) - 1
-            # FÓRMULA DE CALIDAD: EV * Probabilidad al cuadrado
-            # Esto mata las cuotas 11.00 con baja probabilidad y prioriza la seguridad
             score = ev * (prob * prob) 
             if ev > MIN_EV_THRESHOLD:
                 candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
 
-        # Extraer cuotas
         try:
             o_h = float(odds_row.get('B365H', 0)); o_d = float(odds_row.get('B365D', 0)); o_a = float(odds_row.get('B365A', 0))
             o_o25 = float(odds_row.get('B365>2.5', 0)); o_u25 = float(odds_row.get('B365<2.5', 0))
@@ -265,15 +262,10 @@ class OmniHybridBot:
         if o_h > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
-            
-            # Mercados derivados (DNB, DC) - Estimación con margen
-            o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93
-            o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
+            o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93; o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
             add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
             add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
-            
-            o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92
-            o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
+            o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92; o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
             add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
             add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
 
@@ -281,13 +273,10 @@ class OmniHybridBot:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25)
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], o_u25)
             
-        # BTTS Estimado
         o_btts_y = 1.0 / sim['goals'][1] * 0.9 if sim['goals'][1] > 0 else 0
-        if o_btts_y > 1.4: # Solo si paga decente
-            add("BTTS SÍ", "BTTS", sim['goals'][1], o_btts_y)
+        if o_btts_y > 1.4: add("BTTS SÍ", "BTTS", sim['goals'][1], o_btts_y)
 
         if not candidates: return None
-        # Ordenamos por SCORE para obtener el mejor equilibrio
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0]
 
@@ -297,7 +286,7 @@ class OmniHybridBot:
         return max(0.0, min(((b * prob - q) / b) * KELLY_FRACTION, MAX_STAKE_PCT))
 
     def run_analysis(self):
-        self.daily_picks_buffer = [] # Reset buffer
+        self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando OMNI-HYBRID SCAN: {today}", flush=True)
         
@@ -347,11 +336,9 @@ class OmniHybridBot:
                 stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'])
                 stake_viz = "🟩" * int(stake * 100 * 2) + "⬜" * (5 - int(stake * 100 * 2))
                 
-                # Iconos de Forma
                 form_h = self.get_team_form_icon(data['raw_df'], rh)
                 form_a = self.get_team_form_icon(data['raw_df'], ra)
                 
-                # Datos X-Ray Completos
                 ph, pd_raw, pa = sim['1x2']
                 dc1x, dcx2 = sim['dc']
                 btts = sim['goals'][1]
@@ -386,14 +373,14 @@ class OmniHybridBot:
                 
                 self.send_msg(msg)
                 
-                # Guardar en buffer para Gemini (Resumen Final)
-                self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
+                self.daily_picks_buffer.append(
+                    f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)"
+                )
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], "PENDING", 0])
 
         if bets_found > 0:
-            # LLAMADA EXPLÍCITA AL FINAL (Con reporte de errores)
             self.generate_final_summary()
         else:
             self.send_msg("🧹 Barrido completado: Sin oportunidades de alto valor hoy.")
