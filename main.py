@@ -9,11 +9,11 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v33.0 (TITANIUM) ---
+# --- CONFIGURACIÓN EURO-SNIPER v35.0 (ULTIMATE DASHBOARD) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "15:28" # UTC (20:00 Tucson)
+RUN_TIME = "02:43" # UTC (20:00 Tucson)
 
 # AJUSTES MATEMÁTICOS
 SIMULATION_RUNS = 100000 
@@ -47,7 +47,7 @@ class TelegramSniper:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- TITANIUM ENGINE STARTED ---", flush=True)
+        print("--- ULTIMATE DASHBOARD ENGINE STARTED ---", flush=True)
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
             print("❌ ERROR: Credenciales faltantes", flush=True)
 
@@ -176,6 +176,7 @@ class TelegramSniper:
                                 
                                 odd_us = str(row['Fair_Odd_US'])
                                 if odd_us.startswith("+"): odd_dec = (int(odd_us[1:]) / 100) + 1
+                                elif odd_us == "N/A": odd_dec = 1.0 # Ignorar si no hubo pick real
                                 else: odd_dec = (100 / abs(int(odd_us))) + 1
                                 
                                 result = "LOSS"; pnl = -1.0 
@@ -221,19 +222,24 @@ class TelegramSniper:
         over25 = np.mean((h_sim + a_sim) > 2.5)
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
-        # HANDICAP CALCULATION
-        # Prob de que Local gane por más de 1.5 goles (Goleada)
-        ah_h = np.mean((h_sim - 1.5) > a_sim) 
-        # Prob de que Visita gane por más de 1.5 goles
-        ah_a = np.mean((a_sim - 1.5) > h_sim)
+        # --- NUEVOS CALCULOS ---
+        # DNB (Draw No Bet)
+        total_win_probs = win_h + win_a
+        dnb_h = win_h / total_win_probs
+        dnb_a = win_a / total_win_probs
+
+        # Asian Handicap -1.5 (Gana por 2+) / +1.5 (Pierde por 1 o menos)
+        ah_h_15 = np.mean((h_sim - 1.5) > a_sim) 
+        ah_a_15 = np.mean((a_sim + 1.5) > h_sim)
         
         return {
             'teams': (rh, ra),
             'xg': (xg_h, xg_a),
             'probs': (win_h, draw, win_a),
+            'dnb': (dnb_h, dnb_a),
             'goals': (over25, btts),
             'dc': (win_h + draw, win_a + draw),
-            'ah': (ah_h, ah_a),
+            'ah_15': (ah_h_15, ah_a_15),
             'form': (info[rh]['form'], info[ra]['form'])
         }
 
@@ -268,9 +274,7 @@ class TelegramSniper:
             self.send_msg(f"💤 <b>{today}:</b> Base de datos vacía.")
             return
 
-        found_picks = 0
         header_sent = False
-        rejected_log = []
 
         for idx, row in daily.iterrows():
             div = row['Div']
@@ -278,93 +282,90 @@ class TelegramSniper:
                 res = self.analyze_match(row['HomeTeam'], row['AwayTeam'], div)
                 if res:
                     ph, px, pa = res['probs']; po, pb = res['goals']; d1x, dx2 = res['dc']
-                    ah_h, ah_a = res['ah']
+                    dnb_h, dnb_a = res['dnb']
+                    ah_h_15, ah_a_15 = res['ah_15']
                     threshold = LEAGUE_CONFIG[div]['threshold']
                     
-                    pick = None; conf = 0.0; pick_type = ""
+                    # DETERMINAR EL MEJOR PICK (O NINGUNO)
+                    pick = "NO BET"; conf = 0.0; pick_type = ""
                     
+                    # Prioridad de selección (Orden de confianza)
                     if ph > threshold: pick = "GANA LOCAL"; conf = ph; pick_type="WIN"
                     elif pa > threshold: pick = "GANA VISITA"; conf = pa; pick_type="WIN"
-                    elif d1x > 0.83: pick = "1X"; conf = d1x; pick_type="DC"
-                    elif dx2 > 0.83: pick = "X2"; conf = dx2; pick_type="DC"
+                    elif d1x > 0.83: pick = "1X (DOBLE)"; conf = d1x; pick_type="DC"
+                    elif dx2 > 0.83: pick = "X2 (DOBLE)"; conf = dx2; pick_type="DC"
                     elif po > 0.63: pick = "OVER 2.5"; conf = po; pick_type="GOL"
                     elif pb > 0.63: pick = "BTTS (Ambos)"; conf = pb; pick_type="BTTS"
                     
-                    if pick:
-                        found_picks += 1
-                        if not header_sent:
-                            self.send_msg(f"🐺 <b>EURO-SNIPER v33</b>\n📅 {today} | 🧬 Titanium")
-                            header_sent = True
+                    # ENCABEZADO DIARIO
+                    if not header_sent:
+                        self.send_msg(f"🐺 <b>EURO-SNIPER v35</b>\n📅 {today} | 🧬 Dashboard")
+                        header_sent = True
 
+                    # DATOS VISUALES
+                    f_h = res['form'][0]; f_a = res['form'][1]
+                    mom_h = "🔥" if f_h > 1.05 else ("🧊" if f_h < 0.95 else "➡️")
+                    mom_a = "🔥" if f_a > 1.05 else ("🧊" if f_a < 0.95 else "➡️")
+                    
+                    # VEREDICTO FINAL BLOCK
+                    verdict_block = ""
+                    if pick != "NO BET":
                         fair_odd_dec = 1/conf
                         fair_odd_us = self.decimal_to_american(fair_odd_dec)
                         stake_reco = self.calculate_kelly_stake(conf, threshold)
                         self.log_new_pick(today, LEAGUE_CONFIG[div]['name'], res['teams'][0], res['teams'][1], pick, conf, fair_odd_us)
-
-                        f_h = res['form'][0]; f_a = res['form'][1]
-                        mom_h = "🔥" if f_h > 1.05 else ("🧊" if f_h < 0.95 else "➡️")
-                        mom_a = "🔥" if f_a > 1.05 else ("🧊" if f_a < 0.95 else "➡️")
+                        
+                        emoji_pick = "👉"
+                        if pick_type == "WIN": emoji_pick = "💰"
+                        if pick_type == "DC": emoji_pick = "🛡️"
+                        if pick_type == "GOL": emoji_pick = "⚽"
+                        if pick_type == "BTTS": emoji_pick = "🥊"
                         
                         edge = conf - threshold
                         stake_bar = "🟦⬜⬜ (Min)"
                         if edge > 0.10: stake_bar = "🟦🟦⬜ (Fuerte)"
                         if edge > 0.15: stake_bar = "🟦🟦🟦 (MAX)"
 
-                        emoji_pick = "👉"
-                        if pick_type == "WIN": emoji_pick = "💰"
-                        if pick_type == "DC": emoji_pick = "🛡️"
-                        if pick_type == "GOL": emoji_pick = "⚽"
-                        if pick_type == "BTTS": emoji_pick = "🥊"
-
-                        msg = (
-                            f"🏆 <b>{LEAGUE_CONFIG[div]['name']}</b>\n"
-                            f"<b>{res['teams'][0]}</b> {mom_h} vs {mom_a} <b>{res['teams'][1]}</b>\n"
-                            f"───────────────\n"
-                            f"📊 <b>X-RAY DATA:</b>\n"
-                            f"• 1X2: {ph*100:.0f}% / {px*100:.0f}% / {pa*100:.0f}%\n"
-                            f"• DC: 1X {d1x*100:.0f}% | X2 {dx2*100:.0f}%\n"
-                            f"• GOALS: Ov {po*100:.0f}% | Un {(1-po)*100:.0f}%\n"
-                            f"• HANDI: H-1.5 {ah_h*100:.0f}% | A+1.5 {(1-ah_h)*100:.0f}%\n"
-                            f"───────────────\n"
+                        verdict_block = (
                             f"🎯 <b>VEREDICTO:</b>\n"
                             f"{emoji_pick} <b>{pick}</b>\n"
                             f"⚖️ Fair Odd: <b>{fair_odd_us}</b>\n"
                             f"🏦 Stake: <b>{stake_bar}</b>"
                         )
-                        self.send_msg(msg)
-                        time.sleep(1.5)
                     else:
-                        # LOGICA DE DESCARTES PRECISA (Debugging del Tottenham)
-                        # Detectamos cuál fue el "mejor intento" y qué umbral falló
-                        probs = [
-                            (ph, threshold, "Gana"), 
-                            (pa, threshold, "Gana"), 
-                            (d1x, 0.83, "1X"), 
-                            (dx2, 0.83, "X2"), 
-                            (po, 0.63, "Over"), 
-                            (pb, 0.63, "BTTS")
-                        ]
-                        # Ordenamos por probabilidad de mayor a menor
-                        best_try = sorted(probs, key=lambda x: x[0], reverse=True)[0]
-                        
-                        prob_val = best_try[0]
-                        req_val = best_try[1]
-                        type_val = best_try[2]
-                        
-                        rejected_log.append(f"• {res['teams'][0]} vs {res['teams'][1]}: {type_val} {prob_val*100:.0f}% (Req {req_val*100:.0f}%)")
+                        verdict_block = (
+                            f"🎯 <b>VEREDICTO:</b>\n"
+                            f"⚠️ <b>NO BET / RIESGO</b>\n"
+                            f"⚖️ Fair Odd: N/A\n"
+                            f"🏦 Stake: ⛔ 0%"
+                        )
 
-        if rejected_log:
-            rej_msg = "\n".join(rejected_log[:10])
-            self.send_msg(f"🗑️ <b>DESCARTES DEL DÍA:</b>\n{rej_msg}")
-        
-        if found_picks == 0 and not rejected_log:
-            self.send_msg(f"⚠️ <b>{today}:</b> Sin partidos en la lista.")
-        else:
-            self.send_msg(f"🏁 <b>Fin del reporte.</b>")
+                    # --- MENSAJE FINAL (FORMATO SOLICITADO) ---
+                    # Nota: Handi 0.5 H es igual a probabilidad de ganar (ph)
+                    # Nota: Handi 0.5 A es igual a Doble Oportunidad X2 (dx2)
+                    msg = (
+                        f"🏆 <b>{LEAGUE_CONFIG[div]['name']}</b>\n"
+                        f"<b>{res['teams'][0]}</b> {mom_h} vs {mom_a} <b>{res['teams'][1]}</b>\n"
+                        f"───────────────\n"
+                        f"📊 <b>X-RAY DATA:</b>\n"
+                        f"• 1X2: {ph*100:.0f}% / {px*100:.0f}% / {pa*100:.0f}%\n"
+                        f"• DO: 1X {d1x*100:.0f}% | X2 {dx2*100:.0f}%\n"
+                        f"• Goals 2.5: Ov {po*100:.0f}% | Un {(1-po)*100:.0f}%\n"
+                        f"• DNB: H {dnb_h*100:.0f}% | A {dnb_a*100:.0f}%\n"
+                        f"• BTTS: Sí {pb*100:.0f}% | No {(1-pb)*100:.0f}%\n"
+                        f"• HANDI 0.5: H {ph*100:.0f}% | A {dx2*100:.0f}%\n"
+                        f"• Handi 1.5: H-1.5 {ah_h_15*100:.0f}% | A+1.5 {ah_a_15*100:.0f}%\n"
+                        f"───────────────\n"
+                        f"{verdict_block}"
+                    )
+                    self.send_msg(msg)
+                    time.sleep(1.5)
+
+        self.send_msg(f"🏁 <b>Fin del reporte.</b>")
 
 if __name__ == "__main__":
     bot = TelegramSniper()
-    print(f"🤖 BOT TITANIUM. Hora target: {RUN_TIME} UTC", flush=True)
+    print(f"🤖 BOT ULTIMATE DASHBOARD. Hora target: {RUN_TIME} UTC", flush=True)
     if os.getenv("SELF_TEST", "False") == "True": bot.run_daily_scan()
     schedule.every().day.at(RUN_TIME).do(bot.run_daily_scan)
     while True: schedule.run_pending(); time.sleep(60)
