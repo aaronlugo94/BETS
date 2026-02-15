@@ -10,22 +10,21 @@ import csv
 import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN v58.1 (HOTFIX - SEASON RESTORED) ---
+# --- CONFIGURACIÓN v59.0 (DEBUGGER EDITION) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "21:47" 
+RUN_TIME = "09:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
-# Pesos Híbridos: Cuánto confiamos en el mercado vs nuestro modelo
-WEIGHT_MARKET = 0.70  # El mercado es sabio
-WEIGHT_MODEL = 0.30   # Nuestro edge basado en forma
+WEIGHT_MARKET = 0.70  
+WEIGHT_MODEL = 0.30   
 
-SEASON = '2526'       # <--- ¡VARIABLE RESTAURADA! (Temporada 2025/2026)
+SEASON = '2526'       
 HISTORY_FILE = "historial_omni_hybrid.csv"
 
 # GESTIÓN DE RIESGO
@@ -37,13 +36,12 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
-# (SDK Check)
+# (SDK Check con Log Explícito)
 try:
     from google import genai
     SDK_AVAILABLE = True
 except ImportError:
     SDK_AVAILABLE = False
-    print("⚠️ SDK no instalado. Usando modo básico.", flush=True)
 
 LEAGUE_CONFIG = {
     'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1},
@@ -69,11 +67,15 @@ class OmniHybridBot:
         if SDK_AVAILABLE and GEMINI_API_KEY:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                print("🧠 Gemini SDK: CONECTADO", flush=True)
-            except: pass
+                print("🧠 Gemini SDK: INICIALIZADO", flush=True)
+            except Exception as e:
+                print(f"⚠️ Error Init Gemini: {e}", flush=True)
+        else:
+            if not SDK_AVAILABLE: print("❌ LIBRERÍA 'google-genai' NO INSTALADA.", flush=True)
+            if not GEMINI_API_KEY: print("❌ GEMINI_API_KEY NO ENCONTRADA.", flush=True)
 
     def _check_creds(self):
-        print("--- REALISTIC ENGINE v58.1 STARTED ---", flush=True)
+        print("--- DEBUGGER ENGINE v59 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -91,7 +93,8 @@ class OmniHybridBot:
                 retry = int(r.json().get('parameters', {}).get('retry_after', 30))
                 time.sleep(retry + 2)
                 if retry_count < 2: self.send_msg(text, retry_count + 1)
-        except: pass
+        except Exception as e:
+            print(f"Error Telegram: {e}", flush=True)
         time.sleep(3)
 
     def dec_to_am(self, decimal_odd):
@@ -100,13 +103,25 @@ class OmniHybridBot:
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
     def call_gemini(self, prompt):
-        if not self.ai_client: return None
+        # Diagnóstico en tiempo real
+        if not SDK_AVAILABLE:
+            return "❌ <b>Error Crítico:</b> La librería `google-genai` no está instalada en el servidor."
+        if not self.ai_client:
+            return "❌ <b>Error Crítico:</b> Cliente Gemini no inicializado (¿API Key incorrecta?)."
+            
         try:
-            r = self.ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            # Usamos 1.5 Flash que es más estable globalmente que el 2.0
+            r = self.ai_client.models.generate_content(
+                model="gemini-2.0-flash", 
+                contents=prompt
+            )
             return r.text
-        except: return None
+        except Exception as e:
+            error_str = str(e)
+            print(f"⚠️ Excepción Gemini: {error_str}", flush=True)
+            return f"❌ <b>Error Gemini:</b> {error_str[:100]}..."
 
-    # --- CÁLCULO DE FUERZA RELATIVA ---
+    # --- CÁLCULOS ---
     def calculate_xg_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0
@@ -116,11 +131,8 @@ class OmniHybridBot:
             if row['HomeTeam'] == team: sot = row.get('HST', row['FTHG']*2.5); goals = row['FTHG']
             else: sot = row.get('AST', row['FTAG']*2.5); goals = row['FTAG']
             w_sot += sot * weight; w_goals += goals * weight
-        
-        avg_sot = w_sot / total_w
-        avg_goals = w_goals / total_w
-        raw_strength = (avg_sot * 0.50) + (avg_goals * 0.50)
-        return raw_strength
+        avg_sot = w_sot / total_w; avg_goals = w_goals / total_w
+        return (avg_sot * 0.50) + (avg_goals * 0.50)
 
     def get_league_data(self, div):
         if div in self.history_cache: return self.history_cache[div]
@@ -145,12 +157,11 @@ class OmniHybridBot:
             return self.history_cache[div]
         except: return None
 
-    # --- SIMULACIÓN HÍBRIDA (MARKET ANCHORED) ---
+    # --- SIMULACIÓN HÍBRIDA ---
     def simulate_match(self, home, away, league_data, market_odds):
         s = league_data['strength']
         avg_g = league_data['avg_g'] / 2
         
-        # 1. Probabilidades del MODELO
         xg_h = min(3.0, s.get(home, 1.0) * avg_g * 1.25) 
         xg_a = min(3.0, s.get(away, 1.0) * avg_g)
         
@@ -160,13 +171,11 @@ class OmniHybridBot:
         model_h = np.mean(h_sim > a_sim)
         model_a = np.mean(h_sim < a_sim)
         
-        # 2. Probabilidades IMPLÍCITAS (Mercado)
         if market_odds['H'] > 0:
             margin = 1.05 
             implied_h = (1 / market_odds['H']) / margin
             implied_a = (1 / market_odds['A']) / margin
             
-            # 3. FUSIÓN
             final_prob_h = (implied_h * WEIGHT_MARKET) + (model_h * WEIGHT_MODEL)
             final_prob_a = (implied_a * WEIGHT_MARKET) + (model_a * WEIGHT_MODEL)
             final_prob_d = 1.0 - final_prob_h - final_prob_a
@@ -175,7 +184,6 @@ class OmniHybridBot:
             model_d = np.mean(h_sim == a_sim)
             final_prob_h, final_prob_d, final_prob_a = model_h, model_d, model_a
 
-        # Mercados Derivados
         dnb_h = final_prob_h / (final_prob_h + final_prob_a)
         dnb_a = final_prob_a / (final_prob_h + final_prob_a)
         dc_1x = final_prob_h + final_prob_d
@@ -184,19 +192,19 @@ class OmniHybridBot:
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         over25 = np.mean((h_sim + a_sim) > 2.5)
         
+        h_sim_ah, a_sim_ah = h_sim, a_sim # Handicap uses raw sim
+        
         return {
             'xg': (xg_h, xg_a),
             '1x2': (final_prob_h, final_prob_d, final_prob_a),
             'goals': (over25, btts),
             'dc': (dc_1x, dc_x2),
             'dnb': (dnb_h, dnb_a),
-            'ah_sim': (h_sim, a_sim) 
+            'ah_sim': (h_sim_ah, a_sim_ah) 
         }
 
-    # --- SELECCIÓN INTELIGENTE ---
     def find_best_value(self, sim, odds_row):
         candidates = []
-        
         try:
             o_h = float(odds_row.get('B365H', 0)); o_d = float(odds_row.get('B365D', 0)); o_a = float(odds_row.get('B365A', 0))
             o_o25 = float(odds_row.get('B365>2.5', 0)); o_u25 = float(odds_row.get('B365<2.5', 0))
@@ -205,8 +213,7 @@ class OmniHybridBot:
         def add(name, market, prob, odd):
             if odd < 1.10 or prob < 0.35: return 
             ev = (prob * odd) - 1
-            if ev > 0.40: return # Filtro de cordura (EV > 40% es error casi siempre)
-            
+            if ev > 0.40: return 
             score = ev * (prob ** 1.5) 
             if ev > MIN_EV_THRESHOLD:
                 candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
@@ -214,14 +221,10 @@ class OmniHybridBot:
         if o_h > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
-            
-            o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93; o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
-            add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
-            add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
-            
-            o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92; o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
-            add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
-            add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
+            add("DNB HOME", "DNB", sim['dnb'][0], (o_h * (1 - (1/o_d))) * 0.93)
+            add("DNB AWAY", "DNB", sim['dnb'][1], (o_a * (1 - (1/o_d))) * 0.93)
+            add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/o_h) + (1/o_d)) * 0.92)
+            add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/o_a) + (1/o_d)) * 0.92)
 
         if o_o25 > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25)
@@ -252,7 +255,7 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- RESUMEN FINAL AUDITOR ---
+    # --- RESUMEN FINAL ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está auditando la cartera...</b>")
@@ -260,39 +263,27 @@ class OmniHybridBot:
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        ERES UN GESTOR DE RIESGOS DE APUESTAS (RISK MANAGER).
-        
-        He detectado estas posibles apuestas de valor (EV+):
+        ERES UN GESTOR DE RIESGOS DE APUESTAS.
+        Analiza estas Value Bets:
         ---
         {picks_text}
         ---
-        
-        TU TRABAJO ES FILTRAR Y ELEGIR LO MEJOR.
-        Sé escéptico. Si ves una cuota muy alta (ej: >4.00), asume que es arriesgada.
-        
-        Genera un reporte HTML limpio:
-        
-        🧠 <b>DICTAMEN FINAL DEL DÍA</b>
-        
-        💎 <b>LA JOYA (Mejor Valor Real):</b>
-        [Elige el pick más equilibrado entre cuota y probabilidad. Explica por qué.]
-        
-        🛡️ <b>EL BANKER (Seguridad):</b>
-        [El pick más probable para sumar verde, aunque pague poco.]
-        
-        💣 <b>TRAMPA MORTAL (Cuidado):</b>
-        [Si ves algún pick con EV exagerado (>20%) o cuota muy alta, advierte que puede ser un error de modelo.]
-        
-        📊 <b>Estrategia Sugerida:</b> [Ej: Stake plano, o agresivo en la Joya]
+        Genera reporte HTML:
+        🧠 <b>DICTAMEN FINAL</b>
+        💎 <b>LA JOYA:</b> [Mejor valor-riesgo]
+        🛡️ <b>EL BANKER:</b> [Más seguro]
+        💣 <b>TRAMPA:</b> [Posible error de modelo]
+        📊 <b>Estrategia:</b> [Consejo]
         """
         
+        # Llamada con manejo de errores visible
         ai_resp = self.call_gemini(prompt)
-        if ai_resp: self.send_msg(ai_resp)
+        self.send_msg(ai_resp)
 
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando REALISTIC SCAN: {today}", flush=True)
+        print(f"🚀 Iniciando DEBUG SCAN: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -310,7 +301,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Modo Realista)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -373,13 +364,8 @@ class OmniHybridBot:
                     f"───────────────\n"
                     f"📊 xG: {rh} {sim['xg'][0]:.2f} - {sim['xg'][1]:.2f} {ra}"
                 )
-                
                 self.send_msg(msg)
-                
-                self.daily_picks_buffer.append(
-                    f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)"
-                )
-                
+                self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], "PENDING", 0])
 
