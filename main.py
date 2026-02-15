@@ -10,13 +10,13 @@ import csv
 import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN v59.0 (DEBUGGER EDITION) ---
+# --- CONFIGURACIÓN v60.0 (STABLE MODEL FIX) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "22:27" 
+RUN_TIME = "22:32" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -36,7 +36,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
-# (SDK Check con Log Explícito)
+# (SDK Check)
 try:
     from google import genai
     SDK_AVAILABLE = True
@@ -67,7 +67,7 @@ class OmniHybridBot:
         if SDK_AVAILABLE and GEMINI_API_KEY:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                print("🧠 Gemini SDK: INICIALIZADO", flush=True)
+                print("🧠 Gemini SDK: INICIALIZADO (v2.0 Flash)", flush=True)
             except Exception as e:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
         else:
@@ -75,7 +75,7 @@ class OmniHybridBot:
             if not GEMINI_API_KEY: print("❌ GEMINI_API_KEY NO ENCONTRADA.", flush=True)
 
     def _check_creds(self):
-        print("--- DEBUGGER ENGINE v59 STARTED ---", flush=True)
+        print("--- ENGINE v60 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -103,16 +103,13 @@ class OmniHybridBot:
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
     def call_gemini(self, prompt):
-        # Diagnóstico en tiempo real
-        if not SDK_AVAILABLE:
-            return "❌ <b>Error Crítico:</b> La librería `google-genai` no está instalada en el servidor."
-        if not self.ai_client:
-            return "❌ <b>Error Crítico:</b> Cliente Gemini no inicializado (¿API Key incorrecta?)."
+        if not SDK_AVAILABLE or not self.ai_client:
+            return "❌ <b>Error:</b> SDK de IA no disponible."
             
         try:
-            # Usamos 1.5 Flash que es más estable globalmente que el 2.0
+            # USAMOS EL MODELO QUE SABEMOS QUE FUNCIONA (v2.0)
             r = self.ai_client.models.generate_content(
-                model="gemini-1.5-flash", 
+                model="gemini-2.0-flash", 
                 contents=prompt
             )
             return r.text
@@ -213,7 +210,7 @@ class OmniHybridBot:
         def add(name, market, prob, odd):
             if odd < 1.10 or prob < 0.35: return 
             ev = (prob * odd) - 1
-            if ev > 0.40: return 
+            if ev > 0.40: return # Filtro de cordura
             score = ev * (prob ** 1.5) 
             if ev > MIN_EV_THRESHOLD:
                 candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
@@ -221,10 +218,12 @@ class OmniHybridBot:
         if o_h > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
-            add("DNB HOME", "DNB", sim['dnb'][0], (o_h * (1 - (1/o_d))) * 0.93)
-            add("DNB AWAY", "DNB", sim['dnb'][1], (o_a * (1 - (1/o_d))) * 0.93)
-            add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/o_h) + (1/o_d)) * 0.92)
-            add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/o_a) + (1/o_d)) * 0.92)
+            o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93; o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
+            add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
+            add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
+            o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92; o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
+            add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
+            add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
 
         if o_o25 > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25)
@@ -264,26 +263,27 @@ class OmniHybridBot:
         
         prompt = f"""
         ERES UN GESTOR DE RIESGOS DE APUESTAS.
+        
         Analiza estas Value Bets:
         ---
         {picks_text}
         ---
+        
         Genera reporte HTML:
         🧠 <b>DICTAMEN FINAL</b>
-        💎 <b>LA JOYA:</b> [Mejor valor-riesgo]
+        💎 <b>LA JOYA:</b> [Mejor valor]
         🛡️ <b>EL BANKER:</b> [Más seguro]
         💣 <b>TRAMPA:</b> [Posible error de modelo]
         📊 <b>Estrategia:</b> [Consejo]
         """
         
-        # Llamada con manejo de errores visible
         ai_resp = self.call_gemini(prompt)
         self.send_msg(ai_resp)
 
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando DEBUG SCAN: {today}", flush=True)
+        print(f"🚀 Iniciando V60 SCAN: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -301,7 +301,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (v60)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
