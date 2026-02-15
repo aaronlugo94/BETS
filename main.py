@@ -10,13 +10,13 @@ import csv
 import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN v60.0 (STABLE MODEL FIX) ---
+# --- CONFIGURACIÓN v60.0 (GEMINI 2.0 NATIVE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "22:32" 
+RUN_TIME = "22:44" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -210,7 +210,7 @@ class OmniHybridBot:
         def add(name, market, prob, odd):
             if odd < 1.10 or prob < 0.35: return 
             ev = (prob * odd) - 1
-            if ev > 0.40: return # Filtro de cordura
+            if ev > 0.40: return 
             score = ev * (prob ** 1.5) 
             if ev > MIN_EV_THRESHOLD:
                 candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
