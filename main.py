@@ -9,11 +9,11 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v45.0 (HYBRID ULTIMATE) ---
+# --- CONFIGURACIÓN EURO-SNIPER v46.0 (AMERICAN STYLE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "04:05" 
+RUN_TIME = "04:49" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -53,7 +53,7 @@ class ValueSniperBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v45 (HYBRID ANALYTICS) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v46 (AMERICAN ODDS) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -69,6 +69,15 @@ class ValueSniperBot:
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
         try: requests.post(url, json=payload, timeout=10)
         except Exception as e: print(f"Error Telegram: {e}")
+
+    # --- UTILIDADES ---
+    def dec_to_am(self, decimal_odd):
+        """Convierte cuota decimal a americana"""
+        if decimal_odd <= 1.01: return "-10000"
+        if decimal_odd >= 2.00:
+            return f"+{int((decimal_odd - 1) * 100)}"
+        else:
+            return f"{int(-100 / (decimal_odd - 1))}"
 
     # --- MOTOR MATEMÁTICO ---
     def calculate_form_exponential(self, df, team, metric_col_h, metric_col_a):
@@ -172,47 +181,51 @@ class ValueSniperBot:
             
         return final_xg_h, final_xg_a
 
-    # --- SIMULACIÓN AVANZADA (Full Markets) ---
+    # --- SIMULACIÓN AVANZADA ---
     def simulate_match(self, xg_h, xg_a):
         h_sim = np.random.poisson(xg_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(xg_a, SIMULATION_RUNS)
         
-        # 1. 1X2 Principal
+        # 1. 1X2
         win_h = np.mean(h_sim > a_sim)
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
         
-        # Correction bias
         if (xg_h + xg_a) < 2.35:
             adj = 0.025
             draw += adj; win_h -= adj/2; win_a -= adj/2
             
-        # 2. Mercados Secundarios
-        # BTTS (Ambos Marcan)
+        # 2. Mercados
         btts = np.mean((h_sim > 0) & (a_sim > 0))
-        
-        # Over/Under 2.5
         over25 = np.mean((h_sim + a_sim) > 2.5)
         
         # Doble Oportunidad
         dc_1x = win_h + draw
         dc_x2 = win_a + draw
         
-        # DNB (Draw No Bet) - Normalizamos eliminando el empate
+        # DNB
         total_win = win_h + win_a
         dnb_h = win_h / total_win if total_win > 0 else 0
         dnb_a = win_a / total_win if total_win > 0 else 0
         
-        # Asian Handicap -1.5 (Gana por 2 o más)
-        ah_h_15 = np.mean((h_sim - 1.5) > a_sim)
-        ah_a_15 = np.mean((a_sim + 1.5) > h_sim) # A cubre +1.5 (pierde por 1, empata o gana)
+        # Asian Handicap (Positivo y Negativo)
+        # Prob de que H cubra -1.5 (Gana por 2+)
+        ah_h_minus15 = np.mean((h_sim - 1.5) > a_sim)
+        # Prob de que H cubra +1.5 (Gana, empata o pierde por 1)
+        ah_h_plus15 = np.mean((h_sim + 1.5) > a_sim)
+        
+        # Prob de que A cubra -1.5
+        ah_a_minus15 = np.mean((a_sim - 1.5) > h_sim)
+        # Prob de que A cubra +1.5
+        ah_a_plus15 = np.mean((a_sim + 1.5) > h_sim)
 
         return {
             '1x2': (win_h, draw, win_a),
             'goals': (over25, btts),
             'dc': (dc_1x, dc_x2),
             'dnb': (dnb_h, dnb_a),
-            'ah': (ah_h_15, ah_a_15)
+            'ah_h': (ah_h_minus15, ah_h_plus15),
+            'ah_a': (ah_a_minus15, ah_a_plus15)
         }
 
     def get_kelly_stake(self, prob, odds):
@@ -403,19 +416,27 @@ class ValueSniperBot:
                 stake_blocks = int(stake_pct * 100 * 2)
                 stake_bar = "🟩" * stake_blocks + "⬜" * (5 - stake_blocks)
                 
-                # Desempaquetado de stats para reporte
+                # Conversión a American Odds
+                odd_am = self.dec_to_am(best_pick['odd'])
+                fair_odd_dec = 1/best_pick['prob']
+                fair_odd_am = self.dec_to_am(fair_odd_dec)
+                
+                # Stats X-Ray
                 ov25, btts = sim_res['goals']
                 dc1x, dcx2 = sim_res['dc']
                 dnb_h, dnb_a = sim_res['dnb']
-                ah_h, ah_a = sim_res['ah']
+                
+                # Handicap Lines
+                ah_h_n, ah_h_p = sim_res['ah_h'] # H -1.5, H +1.5
+                ah_a_n, ah_a_p = sim_res['ah_a'] # A -1.5, A +1.5
                 
                 msg = (
                     f"💎 <b>VALUE DETECTADO</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> vs {ra}\n"
                     f"───────────────\n"
                     f"🎯 PICK: <b>GANA {best_pick['type']} ({best_pick['team']})</b>\n"
-                    f"⚖️ Cuota: <b>{best_pick['odd']}</b>\n"
-                    f"🧠 Prob: <b>{best_pick['prob']*100:.1f}%</b> (Fair: {1/best_pick['prob']:.2f})\n"
+                    f"⚖️ Cuota: <b>{odd_am}</b> ({best_pick['odd']})\n"
+                    f"🧠 Prob: <b>{best_pick['prob']*100:.1f}%</b> (Fair: {fair_odd_am})\n"
                     f"📈 <b>EV: +{best_pick['ev']*100:.1f}%</b>\n"
                     f"🏦 Stake: {stake_bar} ({stake_pct*100:.2f}%)\n"
                     f"───────────────\n"
@@ -423,9 +444,10 @@ class ValueSniperBot:
                     f"• 1X2: {ph*100:.0f}% | {pd_raw*100:.0f}% | {pa*100:.0f}%\n"
                     f"• D.Oport: 1X {dc1x*100:.0f}% | X2 {dcx2*100:.0f}%\n"
                     f"• BTTS: Sí {btts*100:.0f}% | No {(1-btts)*100:.0f}%\n"
-                    f"• Goles 2.5: + {ov25*100:.0f}% | - {(1-ov25)*100:.0f}%\n"
+                    f"• Goals 2.5: Ov {ov25*100:.0f}% | Un {(1-ov25)*100:.0f}%\n"
                     f"• DNB: H {dnb_h*100:.0f}% | A {dnb_a*100:.0f}%\n"
-                    f"• AH -1.5: H {ah_h*100:.0f}% | A {ah_a*100:.0f}%\n"
+                    f"• AH -1.5: H {ah_h_n*100:.0f}% | A {ah_a_n*100:.0f}%\n"
+                    f"• AH +1.5: H {ah_h_p*100:.0f}% | A {ah_a_p*100:.0f}%\n"
                     f"───────────────\n"
                     f"📊 xG: {rh} {xg_h:.2f} - {xg_a:.2f} {ra}"
                 )
@@ -448,7 +470,7 @@ class ValueSniperBot:
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v45. Hora target: {RUN_TIME}", flush=True)
+    print(f"🤖 BOT VALUE HUNTER v46. Hora target: {RUN_TIME}", flush=True)
     
     if os.getenv("SELF_TEST", "False") == "True": 
         bot.run_analysis()
