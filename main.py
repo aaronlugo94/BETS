@@ -16,7 +16,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "22:11" 
+RUN_TIME = "22:27" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -112,7 +112,7 @@ class OmniHybridBot:
         try:
             # Usamos 1.5 Flash que es más estable globalmente que el 2.0
             r = self.ai_client.models.generate_content(
-                model="gemini-2.0-flash", 
+                model="gemini-1.5-flash", 
                 contents=prompt
             )
             return r.text
