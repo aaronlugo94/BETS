@@ -10,27 +10,28 @@ import csv
 import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN v58.0 (REALISTIC HYBRID ENGINE) ---
+# --- CONFIGURACIÓN v58.1 (HOTFIX - SEASON RESTORED) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "21:40" 
+RUN_TIME = "21:47" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
 # Pesos Híbridos: Cuánto confiamos en el mercado vs nuestro modelo
-WEIGHT_MARKET = 0.70  # El mercado es sabio (evita locuras como Nacional vs Porto)
-WEIGHT_MODEL = 0.30   # Nuestro edge basado en forma reciente
+WEIGHT_MARKET = 0.70  # El mercado es sabio
+WEIGHT_MODEL = 0.30   # Nuestro edge basado en forma
 
+SEASON = '2526'       # <--- ¡VARIABLE RESTAURADA! (Temporada 2025/2026)
 HISTORY_FILE = "historial_omni_hybrid.csv"
 
 # GESTIÓN DE RIESGO
 KELLY_FRACTION = 0.20       
 MAX_STAKE_PCT = 0.04        
-MIN_EV_THRESHOLD = 0.02     # 2% de valor es suficiente si es realista
+MIN_EV_THRESHOLD = 0.02     
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -72,7 +73,7 @@ class OmniHybridBot:
             except: pass
 
     def _check_creds(self):
-        print("--- REALISTIC ENGINE v58 STARTED ---", flush=True)
+        print("--- REALISTIC ENGINE v58.1 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -118,7 +119,6 @@ class OmniHybridBot:
         
         avg_sot = w_sot / total_w
         avg_goals = w_goals / total_w
-        # SOT tiene más peso predictivo que goles fortuitos
         raw_strength = (avg_sot * 0.50) + (avg_goals * 0.50)
         return raw_strength
 
@@ -150,8 +150,8 @@ class OmniHybridBot:
         s = league_data['strength']
         avg_g = league_data['avg_g'] / 2
         
-        # 1. Probabilidades del MODELO (Basado en forma reciente)
-        xg_h = min(3.0, s.get(home, 1.0) * avg_g * 1.25) # Home Adv reducido
+        # 1. Probabilidades del MODELO
+        xg_h = min(3.0, s.get(home, 1.0) * avg_g * 1.25) 
         xg_a = min(3.0, s.get(away, 1.0) * avg_g)
         
         h_sim = np.random.poisson(xg_h, SIMULATION_RUNS)
@@ -159,47 +159,38 @@ class OmniHybridBot:
         
         model_h = np.mean(h_sim > a_sim)
         model_a = np.mean(h_sim < a_sim)
-        model_d = np.mean(h_sim == a_sim)
         
-        # 2. Probabilidades IMPLÍCITAS (Lo que dice el mercado)
-        # Si no hay cuotas, confiamos en el modelo (riesgoso pero necesario)
+        # 2. Probabilidades IMPLÍCITAS (Mercado)
         if market_odds['H'] > 0:
-            margin = 1.05 # Margen aprox de bookie
+            margin = 1.05 
             implied_h = (1 / market_odds['H']) / margin
             implied_a = (1 / market_odds['A']) / margin
-            implied_d = (1 / market_odds['D']) / margin
             
-            # 3. FUSIÓN (HÍBRIDO)
-            # Esto corrige la alucinación de Nacional vs Porto
+            # 3. FUSIÓN
             final_prob_h = (implied_h * WEIGHT_MARKET) + (model_h * WEIGHT_MODEL)
             final_prob_a = (implied_a * WEIGHT_MARKET) + (model_a * WEIGHT_MODEL)
-            
-            # Recalcular empate como residual para que sume 100%
             final_prob_d = 1.0 - final_prob_h - final_prob_a
-            if final_prob_d < 0: final_prob_d = 0.05 # Fallback
+            if final_prob_d < 0: final_prob_d = 0.05
         else:
+            model_d = np.mean(h_sim == a_sim)
             final_prob_h, final_prob_d, final_prob_a = model_h, model_d, model_a
 
-        # Mercados Derivados usando las PROBABILIDADES HÍBRIDAS
-        # DNB
+        # Mercados Derivados
         dnb_h = final_prob_h / (final_prob_h + final_prob_a)
         dnb_a = final_prob_a / (final_prob_h + final_prob_a)
-        
-        # Doble Oportunidad
         dc_1x = final_prob_h + final_prob_d
         dc_x2 = final_prob_a + final_prob_d
         
-        # Goles (Aquí usamos más el modelo porque el mercado es menos eficiente en goles)
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         over25 = np.mean((h_sim + a_sim) > 2.5)
         
         return {
             'xg': (xg_h, xg_a),
-            '1x2': (final_prob_h, final_prob_d, final_prob_a), # Ya ajustado
+            '1x2': (final_prob_h, final_prob_d, final_prob_a),
             'goals': (over25, btts),
             'dc': (dc_1x, dc_x2),
             'dnb': (dnb_h, dnb_a),
-            'ah_sim': (h_sim, a_sim) # Para calcular handicaps
+            'ah_sim': (h_sim, a_sim) 
         }
 
     # --- SELECCIÓN INTELIGENTE ---
@@ -211,16 +202,11 @@ class OmniHybridBot:
             o_o25 = float(odds_row.get('B365>2.5', 0)); o_u25 = float(odds_row.get('B365<2.5', 0))
         except: return None
 
-        # Helper
         def add(name, market, prob, odd):
-            if odd < 1.10 or prob < 0.35: return # Filtro de seguridad (Min 35% prob)
+            if odd < 1.10 or prob < 0.35: return 
             ev = (prob * odd) - 1
+            if ev > 0.40: return # Filtro de cordura (EV > 40% es error casi siempre)
             
-            # FILTRO DE CORDURA (SAFETY VALVE)
-            # Si el EV es > 40%, es casi seguro un error de datos o alineación
-            if ev > 0.40: return 
-            
-            # Score prioriza aciertos sobre cuotas largas
             score = ev * (prob ** 1.5) 
             if ev > MIN_EV_THRESHOLD:
                 candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
@@ -229,19 +215,16 @@ class OmniHybridBot:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
             
-            # DNB
             o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93; o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
             add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
             add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
             
-            # DC
             o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92; o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
             add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
             add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
 
         if o_o25 > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25)
-            # Under suele tener menos valor, lo penalizamos ligeramente
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], o_u25)
 
         if not candidates: return None
@@ -254,7 +237,6 @@ class OmniHybridBot:
         return max(0.0, min(((b * prob - q) / b) * KELLY_FRACTION, MAX_STAKE_PCT))
 
     def get_team_form_icon(self, df, team):
-        # Mismo código de iconos...
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
         if len(matches) == 0: return "➡️"
         points = 0; possible = len(matches) * 3
@@ -277,7 +259,6 @@ class OmniHybridBot:
         
         picks_text = "\n".join(self.daily_picks_buffer)
         
-        # PROMPT DE AUDITORÍA ESCÉPTICA
         prompt = f"""
         ERES UN GESTOR DE RIESGOS DE APUESTAS (RISK MANAGER).
         
@@ -343,7 +324,6 @@ class OmniHybridBot:
             if not rh or not ra: continue
             rh = rh[0]; ra = ra[0]
             
-            # Extraer cuotas para el anclaje
             try:
                 m_odds = {
                     'H': float(row.get('B365H', 0)),
@@ -352,7 +332,6 @@ class OmniHybridBot:
                 }
             except: m_odds = {'H':0, 'D':0, 'A':0}
             
-            # SIMULACIÓN HÍBRIDA
             sim = self.simulate_match(rh, ra, data, m_odds)
             best_bet = self.find_best_value(sim, row)
             
@@ -364,13 +343,11 @@ class OmniHybridBot:
                 form_h = self.get_team_form_icon(data['raw_df'], rh)
                 form_a = self.get_team_form_icon(data['raw_df'], ra)
                 
-                # Stats X-Ray
                 ph, pd_raw, pa = sim['1x2']
                 dc1x, dcx2 = sim['dc']
                 btts = sim['goals'][1]
                 ov25 = sim['goals'][0]
                 
-                # Handicap Lines (Calculadas sobre simulación)
                 h_sim, a_sim = sim['ah_sim']
                 ah_h_15 = np.mean((h_sim - 1.5) > a_sim)
                 ah_a_15 = np.mean((a_sim - 1.5) > h_sim)
