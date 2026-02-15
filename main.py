@@ -8,23 +8,28 @@ import schedule
 import os
 import csv
 from datetime import datetime, timedelta
-from google import genai  # <--- IMPORTANTE: Librería de Gemini
 
-# --- CONFIGURACIÓN EURO-SNIPER v47.0 (AI POWERED) ---
+# --- INTENTO DE IMPORTACIÓN SEGURA DE GEMINI ---
+try:
+    from google import genai
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    print("⚠️ ADVERTENCIA: Librería 'google-genai' no encontrada. Modo IA desactivado.", flush=True)
 
-# CRITICAL: API KEYS
+# --- CONFIGURACIÓN EURO-SNIPER v48.0 (STABLE LOGIC + AI) ---
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-# He puesto tu key aquí por defecto, pero es mejor usar variables de entorno
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDLURDLILWZ7jNCc1iQOahMxmetMo0oXkM")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:05" 
+RUN_TIME = "05:16" 
 
-# AJUSTES DE MODELO
+# AJUSTES DE MODELO (MODIFICADOS PARA ESTABILIDAD)
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
-WEIGHT_GOALS = 0.65         
-WEIGHT_SOT = 0.35           
+WEIGHT_GOALS = 0.60         # 60% Peso Goles
+WEIGHT_SOT = 0.40           # 40% Peso Tiros a Puerta
 SEASON = '2526'             
 HISTORY_FILE = "historial_value_bets.csv"
 
@@ -57,17 +62,17 @@ class ValueSniperBot:
         self._check_creds()
         self._init_history_file()
         
-        # --- INICIALIZACIÓN GEMINI ---
+        # --- CLIENTE GEMINI ---
         self.ai_client = None
-        if GEMINI_API_KEY:
+        if GEMINI_AVAILABLE and GEMINI_API_KEY:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
                 print("🧠 Gemini AI: CONECTADO", flush=True)
             except Exception as e:
-                print(f"⚠️ Gemini AI Error: {e}", flush=True)
+                print(f"⚠️ Gemini AI Error Conexión: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v47 (AI POWERED) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v48 (STABLE LOGIC) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -92,27 +97,21 @@ class ValueSniperBot:
 
     # --- GEMINI AI ANALYSIS ---
     def get_ai_analysis(self, raw_data_text):
-        """Envía los datos matemáticos a Gemini para una opinión cualitativa"""
         if not self.ai_client: return ""
         
         prompt = f"""
-        ERES UN ANALISTA DE APUESTAS DEPORTIVAS PROFESIONAL.
+        ERES UN ANALISTA DE APUESTAS DEPORTIVAS EXPERTO.
         
-        Analiza la siguiente "Value Bet" detectada por un algoritmo matemático:
+        Analiza esta Value Bet detectada por mi modelo matemático:
         {raw_data_text}
         
         TU TAREA:
-        Dame un comentario MUY BREVE (máximo 2 líneas) validando o advirtiendo sobre el pick.
-        1. ¿Tiene sentido el valor detectado?
-        2. Menciona un factor clave (motivación, racha, localía) que el modelo matemático podría ignorar.
+        Provee un "AI INSIGHT" corto (máx 3 líneas) y crítico.
+        1. Valida si el xG y el EV tienen sentido futbolístico.
+        2. Menciona un factor externo (lesiones, motivación, estadio) que el modelo podría estar ignorando.
         
-        FORMATO DE SALIDA (HTML SOLAMENTE):
-        🤖 <b>AI INSIGHT:</b> [Tu comentario aquí]
-        
-        REGLAS:
-        - NO uses Markdown (como **negrita**), usa solo etiquetas HTML <b> y <i>.
-        - Sé directo y escéptico.
-        - Si el EV es muy alto (>20%), advierte sobre posible "trampa" o lesiones.
+        FORMATO HTML OBLIGATORIO:
+        🤖 <b>AI INSIGHT:</b> [Tu texto aquí]
         """
         
         try:
@@ -122,9 +121,10 @@ class ValueSniperBot:
             )
             return f"\n───────────────\n{response.text}"
         except Exception as e:
-            return "" # Si falla la IA, no rompemos el reporte, solo lo omitimos
+            print(f"Error Generando AI Insight: {e}")
+            return ""
 
-    # --- MOTOR MATEMÁTICO ---
+    # --- MOTOR MATEMÁTICO (CORREGIDO) ---
     def calculate_form_exponential(self, df, team, metric_col_h, metric_col_a):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0
@@ -140,7 +140,10 @@ class ValueSniperBot:
         avg_recent = weighted_val / total_weight
         
         league_avg = (df[metric_col_h].mean() + df[metric_col_a].mean()) / 2
-        return avg_recent / league_avg if league_avg > 0 else 1.0
+        
+        # --- FIX 1: FORM CLAMPING (Evita multiplicadores locos) ---
+        raw_form = avg_recent / league_avg if league_avg > 0 else 1.0
+        return max(0.70, min(1.30, raw_form)) # Limitamos la forma entre 0.7 y 1.3
 
     def get_league_data(self, div):
         if div in self.history_cache: return self.history_cache[div]
@@ -208,21 +211,32 @@ class ValueSniperBot:
     def calculate_xg(self, home, away, data):
         s = data['stats']; avgs = data['avgs']; info = data['details']
         
+        # 1. Componente Goles (Clásico)
         xg_h_goals = s.loc[home, 'Att_H_G'] * s.loc[away, 'Def_A_G'] * avgs['hg'] * info[home]['form_g']
         xg_a_goals = s.loc[away, 'Att_A_G'] * s.loc[home, 'Def_H_G'] * avgs['ag'] * info[away]['form_g']
         
+        # 2. Componente SOT (Fixed Logic)
         if data['has_sot']:
+            # Ratio de conversión DE LA LIGA (No del partido, para evitar loops)
+            league_conv_h = avgs['hg'] / avgs['hst'] if avgs['hst'] > 0 else 0.1
+            league_conv_a = avgs['ag'] / avgs['ast'] if avgs['ast'] > 0 else 0.1
+            
+            # xG basado en creación de ocasiones * efectividad media
             xSOT_h = s.loc[home, 'Att_H_S'] * s.loc[away, 'Def_A_S'] * avgs['hst'] * info[home]['form_sot']
             xSOT_a = s.loc[away, 'Att_A_S'] * s.loc[home, 'Def_H_S'] * avgs['ast'] * info[away]['form_sot']
             
-            conversion_h = xg_h_goals / xSOT_h if xSOT_h > 0 else 0.3
-            conversion_a = xg_a_goals / xSOT_a if xSOT_a > 0 else 0.3
+            xg_from_sot_h = xSOT_h * league_conv_h
+            xg_from_sot_a = xSOT_a * league_conv_a
             
-            final_xg_h = (xg_h_goals * WEIGHT_GOALS) + ((xSOT_h * conversion_h) * WEIGHT_SOT)
-            final_xg_a = (xg_a_goals * WEIGHT_GOALS) + ((xSOT_a * conversion_a) * WEIGHT_SOT)
+            final_xg_h = (xg_h_goals * WEIGHT_GOALS) + (xg_from_sot_h * WEIGHT_SOT)
+            final_xg_a = (xg_a_goals * WEIGHT_GOALS) + (xg_from_sot_a * WEIGHT_SOT)
         else:
             final_xg_h = xg_h_goals
             final_xg_a = xg_a_goals
+        
+        # --- FIX 2: REALISTIC CAP (Evita 99% probs) ---
+        final_xg_h = min(3.85, final_xg_h)
+        final_xg_a = min(3.85, final_xg_a)
             
         return final_xg_h, final_xg_a
 
@@ -234,6 +248,7 @@ class ValueSniperBot:
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
         
+        # Ajuste empate ligas under
         if (xg_h + xg_a) < 2.35:
             adj = 0.025
             draw += adj; win_h -= adj/2; win_a -= adj/2
@@ -434,11 +449,10 @@ class ValueSniperBot:
                     f"📊 xG: {rh} {xg_h:.2f} - {xg_a:.2f} {ra}"
                 )
                 
-                # --- GEMINI INJECTION ---
+                # --- GEMINI INJECTION SAFE ---
                 ai_insight = self.get_ai_analysis(msg)
                 full_msg = msg + ai_insight
                 self.send_msg(full_msg)
-                # ------------------------
                 
                 with open(HISTORY_FILE, mode='a', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
@@ -449,7 +463,7 @@ class ValueSniperBot:
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v47. Hora target: {RUN_TIME}", flush=True)
+    print(f"🤖 BOT VALUE HUNTER v48. Hora target: {RUN_TIME}", flush=True)
     if os.getenv("SELF_TEST", "False") == "True": bot.run_analysis()
     schedule.every().day.at(RUN_TIME).do(bot.run_analysis)
     while True: schedule.run_pending(); time.sleep(60)
