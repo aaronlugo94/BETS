@@ -9,31 +9,32 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v41.0 (VALUE HUNTER STABLE) ---
+# --- CONFIGURACIÓN EURO-SNIPER v42.0 (ULTIMATE VALUE HUNTER) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "03:40" # Hora de análisis
+RUN_TIME = "03:46" # Hora de ejecución diaria (UTC)
 
 # AJUSTES DE MODELO Y GESTIÓN DE CAPITAL
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.88          # Memoria histórica
-WEIGHT_GOALS = 0.65         # Peso Goles
-WEIGHT_SOT = 0.35           # Peso Tiros a Puerta
-SEASON = '2526'             # Temporada 2025/2026 (Según fecha de logs)
+DECAY_ALPHA = 0.88          # Memoria histórica (0.88 da peso a últimos 5-6 partidos)
+WEIGHT_GOALS = 0.65         # Peso de Goles en cálculo de fuerza
+WEIGHT_SOT = 0.35           # Peso de Tiros a Puerta (Shots on Target)
+SEASON = '2526'             # Temporada 2025/2026 (Ajustado a fecha actual)
 HISTORY_FILE = "historial_value_bets.csv"
 
-# KELLY CRITERION SETTINGS
+# GESTIÓN DE RIESGO (KELLY CRITERION)
 KELLY_FRACTION = 0.25       # 1/4 Kelly (Conservador)
-MAX_STAKE_PCT = 0.03        # Max 3% del bank
-MIN_EV_THRESHOLD = 0.04     # Min 4% de valor esperado (EV)
+MAX_STAKE_PCT = 0.03        # Máximo 3% del bankroll por apuesta
+MIN_EV_THRESHOLD = 0.04     # Solo apostar si el valor esperado (EV) es > 4%
 
+# USER AGENTS ROTATIVOS
 USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
 ]
 
-# Configuración de Ligas
+# Configuración de Ligas Soportadas
 LEAGUE_CONFIG = {
     'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1},
     'SP1': {'name': '🇪🇸 LA LIGA', 'tier': 1},
@@ -54,7 +55,7 @@ class ValueSniperBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v41 (STABLE) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v42 (STABLE) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -64,7 +65,7 @@ class ValueSniperBot:
 
     def send_msg(self, text):
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
-            print(f"[TELEGRAM MOCK] {text}")
+            print(f"[TELEGRAM LOG] {text}")
             return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
@@ -95,7 +96,7 @@ class ValueSniperBot:
         
         url = f"https://www.football-data.co.uk/mmz4281/{SEASON}/{div}.csv"
         try:
-            r = requests.get(url, headers={'User-Agent': USER_AGENTS[0]}, timeout=10)
+            r = requests.get(url, headers={'User-Agent': USER_AGENTS[0]}, timeout=15)
             if r.status_code != 200: return None
             
             try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
@@ -156,9 +157,11 @@ class ValueSniperBot:
     def calculate_xg(self, home, away, data):
         s = data['stats']; avgs = data['avgs']; info = data['details']
         
+        # Modelo 1: Basado en Goles
         xg_h_goals = s.loc[home, 'Att_H_G'] * s.loc[away, 'Def_A_G'] * avgs['hg'] * info[home]['form_g']
         xg_a_goals = s.loc[away, 'Att_A_G'] * s.loc[home, 'Def_H_G'] * avgs['ag'] * info[away]['form_g']
         
+        # Modelo 2: Basado en Tiros a Puerta (Más estable)
         if data['has_sot']:
             xSOT_h = s.loc[home, 'Att_H_S'] * s.loc[away, 'Def_A_S'] * avgs['hst'] * info[home]['form_sot']
             xSOT_a = s.loc[away, 'Att_A_S'] * s.loc[home, 'Def_H_S'] * avgs['ast'] * info[away]['form_sot']
@@ -182,6 +185,7 @@ class ValueSniperBot:
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
         
+        # Corrección por sesgo de empate en ligas bajas
         if (xg_h + xg_a) < 2.35:
             adj = 0.025
             draw += adj; win_h -= adj/2; win_a -= adj/2
@@ -196,6 +200,7 @@ class ValueSniperBot:
         
         if kelly_full <= 0: return 0.0
         
+        # Protección Dinámica de Drawdown
         drawdown_factor = 1.0
         if os.path.exists(HISTORY_FILE):
             try:
@@ -209,19 +214,18 @@ class ValueSniperBot:
         final_stake = kelly_full * KELLY_FRACTION * drawdown_factor
         return min(final_stake, MAX_STAKE_PCT)
 
-    # --- LÓGICA DE AUDITORÍA (PnL Real) ---
     def audit_results(self):
         if not os.path.exists(HISTORY_FILE): return
         
         rows = []
         updated = False
+        print("🔎 Auditando resultados...", flush=True)
         
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
             for row in reader:
                 if row['Result'] == 'PENDING':
-                    # Determinar división
                     div = None
                     for code, cfg in LEAGUE_CONFIG.items():
                         if cfg['name'] == row['League']: div = code; break
@@ -230,12 +234,12 @@ class ValueSniperBot:
                         data = self.get_league_data(div)
                         if data:
                             raw = data['raw_df']
-                            # Busca el partido en el histórico reciente (últimos 3 días)
                             match_date = pd.to_datetime(row['Date'], dayfirst=True)
                             real_home = difflib.get_close_matches(row['Home'], data['teams'], n=1, cutoff=0.6)
                             
                             if real_home:
                                 rh = real_home[0]
+                                # Ventana de 48 horas para encontrar el partido
                                 mask = (
                                     (raw['Date'] >= match_date - timedelta(days=2)) & 
                                     (raw['Date'] <= match_date + timedelta(days=2)) & 
@@ -244,23 +248,24 @@ class ValueSniperBot:
                                 match = raw[mask]
                                 
                                 if not match.empty:
-                                    fthg = match.iloc[0]['FTHG']
-                                    ftag = match.iloc[0]['FTAG']
-                                    pick = row['Pick']
-                                    market_odd = float(row['Market_Odd'])
-                                    stake_rec = float(row['Stake_Rec'])
-                                    
-                                    # Lógica PnL vs Market Odd
-                                    result = "LOSS"; profit = -stake_rec
-                                    
-                                    if "WIN HOME" in pick and fthg > ftag:
-                                        result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
-                                    elif "WIN AWAY" in pick and ftag > fthg:
-                                        result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
-                                    
-                                    row['Result'] = result
-                                    row['Profit'] = round(profit, 4)
-                                    updated = True
+                                    try:
+                                        fthg = int(match.iloc[0]['FTHG'])
+                                        ftag = int(match.iloc[0]['FTAG'])
+                                        pick = row['Pick']
+                                        market_odd = float(row['Market_Odd'])
+                                        stake_rec = float(row['Stake_Rec'])
+                                        
+                                        result = "LOSS"; profit = -stake_rec
+                                        
+                                        if "WIN HOME" in pick and fthg > ftag:
+                                            result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
+                                        elif "WIN AWAY" in pick and ftag > fthg:
+                                            result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
+                                        
+                                        row['Result'] = result
+                                        row['Profit'] = round(profit, 4)
+                                        updated = True
+                                    except: pass
                 rows.append(row)
         
         if updated:
@@ -268,44 +273,64 @@ class ValueSniperBot:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
-            print("✅ Auditoría completada: Historial actualizado.", flush=True)
+            print("✅ Historial actualizado.", flush=True)
 
-    # --- EJECUCIÓN PRINCIPAL ---
+    # --- EJECUCIÓN PRINCIPAL BLINDADA v42 ---
     def run_analysis(self):
-        # 1. Ejecutar auditoría antes de nada para actualizar bankroll
         self.audit_results()
 
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando Value Hunter Scan: {today}", flush=True)
         
-        # Descarga Fixtures con manejo de errores robusto
         url_fixt = "https://www.football-data.co.uk/fixtures.csv"
+        
+        # Headers Anti-Bloqueo
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/csv,text/plain;q=0.9,text/html;q=0.8',
+            'Referer': 'https://www.football-data.co.uk/matches.php',
+            'Connection': 'keep-alive'
+        }
+
         try:
-            r = requests.get(url_fixt, headers={'User-Agent': USER_AGENTS[0]}, timeout=15)
+            r = requests.get(url_fixt, headers=headers, timeout=20)
+            
             if r.status_code != 200:
-                self.send_msg(f"⚠️ Error descarga Fixtures (Status: {r.status_code})")
+                self.send_msg(f"⚠️ Error HTTP descarga: {r.status_code}")
                 return
 
             content = r.content.decode('latin-1')
-            fixtures = pd.read_csv(io.StringIO(content))
             
-            # --- FIX: Limpiar espacios en nombres de columnas ---
+            # Verificación de HTML (Bloqueo)
+            if content.strip().startswith(('<html', '<!DOCTYPE', '<head')):
+                print(f"❌ ERROR: Web devolvió HTML en lugar de CSV.", flush=True)
+                self.send_msg("⚠️ Error: Bloqueo detectado (HTML Response).")
+                return
+
+            # Lectura Robusta de CSV
+            try:
+                fixtures = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
+            except:
+                fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', on_bad_lines='skip')
+            
+            # Limpieza de nombres de columna (Evita KeyError: 'Div')
             fixtures.columns = fixtures.columns.str.strip()
             
             if 'Div' not in fixtures.columns or 'Date' not in fixtures.columns:
-                self.send_msg("⚠️ Error: Formato de archivo Fixtures irreconocible")
+                self.send_msg(f"⚠️ Error formato: No se encuentran columnas Div/Date.")
                 return
 
             fixtures['Date'] = pd.to_datetime(fixtures['Date'], dayfirst=True, errors='coerce')
+        
         except Exception as e:
-            self.send_msg(f"⚠️ Excepción descargando Fixtures: {str(e)}")
+            self.send_msg(f"⚠️ Excepción crítica descargando: {str(e)}")
             return
 
         target_date = pd.to_datetime(today, dayfirst=True)
         daily = fixtures[(fixtures['Date'] >= target_date) & (fixtures['Date'] <= target_date + timedelta(days=1))]
         
         if daily.empty:
-            self.send_msg(f"💤 Sin partidos detectados para hoy ({today}) en base de datos.")
+            self.send_msg(f"💤 Sin partidos detectados para hoy ({today}).")
             return
 
         bets_found = 0
@@ -319,13 +344,16 @@ class ValueSniperBot:
             home_team = row.get('HomeTeam')
             away_team = row.get('AwayTeam')
             
+            # Extracción segura de cuotas
             try:
                 odd_h = row.get('B365H', row.get('AvgH', 0))
                 odd_d = row.get('B365D', row.get('AvgD', 0))
                 odd_a = row.get('B365A', row.get('AvgA', 0))
-            except: odd_h, odd_d, odd_a = 0,0,0
+                odd_h = float(odd_h) if odd_h else 0.0
+                odd_a = float(odd_a) if odd_a else 0.0
+            except: odd_h, odd_d, odd_a = 0.0, 0.0, 0.0
 
-            if pd.isna(odd_h) or odd_h <= 1.01: continue
+            if odd_h <= 1.01: continue
 
             data = self.get_league_data(div)
             if not data: continue
@@ -385,9 +413,9 @@ class ValueSniperBot:
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v41. Hora target: {RUN_TIME}", flush=True)
+    print(f"🤖 BOT VALUE HUNTER v42. Hora target: {RUN_TIME}", flush=True)
     
-    # Ejecución inmediata si se define variable de entorno (para testing)
+    # Ejecución inmediata si se define variable de entorno (para testing en deploy)
     if os.getenv("SELF_TEST", "False") == "True": 
         bot.run_analysis()
         
