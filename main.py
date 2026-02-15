@@ -9,26 +9,25 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v43.0 (DEEP DIAGNOSTIC) ---
+# --- CONFIGURACIÓN EURO-SNIPER v44.0 (UTF-8 FIX) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "03:52" # Hora de ejecución diaria (UTC)
+RUN_TIME = "03:56" 
 
-# AJUSTES DE MODELO Y GESTIÓN DE CAPITAL
+# AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.88          # Memoria histórica
-WEIGHT_GOALS = 0.65         # Peso de Goles
-WEIGHT_SOT = 0.35           # Peso de Tiros a Puerta
-SEASON = '2526'             # Temporada 2025/2026
+DECAY_ALPHA = 0.88          
+WEIGHT_GOALS = 0.65         
+WEIGHT_SOT = 0.35           
+SEASON = '2526'             
 HISTORY_FILE = "historial_value_bets.csv"
 
-# GESTIÓN DE RIESGO (KELLY)
-KELLY_FRACTION = 0.25       # 1/4 Kelly
-MAX_STAKE_PCT = 0.03        # Max 3% stake
-MIN_EV_THRESHOLD = 0.04     # Min 4% EV
+# GESTIÓN DE RIESGO
+KELLY_FRACTION = 0.25       
+MAX_STAKE_PCT = 0.03        
+MIN_EV_THRESHOLD = 0.04     
 
-# USER AGENTS (Anti-Bloqueo)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
@@ -54,7 +53,7 @@ class ValueSniperBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v43 (DIAGNOSTIC MODE) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v44 (UTF-8 FIX) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -97,6 +96,7 @@ class ValueSniperBot:
             r = requests.get(url, headers={'User-Agent': USER_AGENTS[0]}, timeout=15)
             if r.status_code != 200: return None
             
+            # FIX DE CODIFICACIÓN TAMBIÉN AQUÍ
             try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
             except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
             
@@ -268,14 +268,13 @@ class ValueSniperBot:
                 writer.writerows(rows)
             print("✅ Auditoría completada.", flush=True)
 
-    # --- EJECUCIÓN PRINCIPAL v43 (MOTOR DIAGNÓSTICO) ---
+    # --- EJECUCIÓN PRINCIPAL v44 (UTF-8 SIG FIX) ---
     def run_analysis(self):
         self.audit_results()
 
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando Value Hunter Scan: {today}", flush=True)
         
-        # Anti-Caché URL
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
         
@@ -294,38 +293,20 @@ class ValueSniperBot:
                 self.send_msg(f"⚠️ Error HTTP descarga: {r.status_code}")
                 return
 
-            content = r.content.decode('latin-1').strip()
-            
-            # --- DIAGNÓSTICO DE CONTENIDO (RAYOS X) ---
-            if "Div" not in content and "Date" not in content:
-                print(f"❌ CONTENIDO BASURA (Primeros 500 chars):\n{content[:500]}", flush=True)
-                if "<html" in content or "<!DOCTYPE" in content:
-                    self.send_msg("⚠️ Error: La web devolvió HTML (Bloqueo activo).")
-                else:
-                    self.send_msg("⚠️ Error: Archivo irreconocible.")
-                return
-
-            # --- LECTURA INTELIGENTE DE CABECERA ---
+            # --- FIX CRÍTICO: Decodificar con 'utf-8-sig' elimina el BOM \ufeff ---
             try:
-                # Buscar en qué línea empieza realmente la tabla
-                lines = content.split('\n')
-                header_row = 0
-                for i, line in enumerate(lines[:25]): 
-                    if line.strip().startswith('Div'):
-                        header_row = i
-                        break
-                
-                if header_row > 0:
-                    print(f"ℹ️ Cabecera encontrada en línea {header_row}. Ajustando lectura...", flush=True)
+                content = r.content.decode('utf-8-sig')
+            except:
+                content = r.content.decode('latin-1') # Fallback
 
-                fixtures = pd.read_csv(io.StringIO(content), header=header_row, on_bad_lines='skip')
+            # Lectura directa
+            try:
+                fixtures = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
+            except:
+                fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', on_bad_lines='skip')
             
-            except Exception as e_parse:
-                print(f"⚠️ Fallo lectura estándar: {e_parse}. Reintentando modo flexible...", flush=True)
-                fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', header=header_row, on_bad_lines='skip')
-            
-            # Limpieza final
-            fixtures.columns = fixtures.columns.str.strip()
+            # Limpieza de nombres de columna (Elimina espacios extra y caracteres raros residuales)
+            fixtures.columns = fixtures.columns.str.strip().str.replace('ï»¿', '')
             
             if 'Div' not in fixtures.columns or 'Date' not in fixtures.columns:
                 print(f"❌ COLUMNAS DETECTADAS: {fixtures.columns.tolist()}", flush=True)
@@ -427,7 +408,7 @@ class ValueSniperBot:
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v43. Hora target: {RUN_TIME}", flush=True)
+    print(f"🤖 BOT VALUE HUNTER v44. Hora target: {RUN_TIME}", flush=True)
     
     if os.getenv("SELF_TEST", "False") == "True": 
         bot.run_analysis()
