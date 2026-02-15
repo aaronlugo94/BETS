@@ -8,12 +8,17 @@ import schedule
 import os
 import csv
 from datetime import datetime, timedelta
+from google import genai  # <--- IMPORTANTE: Librería de Gemini
 
-# --- CONFIGURACIÓN EURO-SNIPER v46.0 (AMERICAN STYLE) ---
+# --- CONFIGURACIÓN EURO-SNIPER v47.0 (AI POWERED) ---
 
+# CRITICAL: API KEYS
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "04:49" 
+# He puesto tu key aquí por defecto, pero es mejor usar variables de entorno
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDLURDLILWZ7jNCc1iQOahMxmetMo0oXkM")
+
+RUN_TIME = "09:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -51,9 +56,18 @@ class ValueSniperBot:
         self.history_cache = {} 
         self._check_creds()
         self._init_history_file()
+        
+        # --- INICIALIZACIÓN GEMINI ---
+        self.ai_client = None
+        if GEMINI_API_KEY:
+            try:
+                self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
+                print("🧠 Gemini AI: CONECTADO", flush=True)
+            except Exception as e:
+                print(f"⚠️ Gemini AI Error: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v46 (AMERICAN ODDS) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v47 (AI POWERED) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -72,12 +86,43 @@ class ValueSniperBot:
 
     # --- UTILIDADES ---
     def dec_to_am(self, decimal_odd):
-        """Convierte cuota decimal a americana"""
         if decimal_odd <= 1.01: return "-10000"
-        if decimal_odd >= 2.00:
-            return f"+{int((decimal_odd - 1) * 100)}"
-        else:
-            return f"{int(-100 / (decimal_odd - 1))}"
+        if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
+        else: return f"{int(-100 / (decimal_odd - 1))}"
+
+    # --- GEMINI AI ANALYSIS ---
+    def get_ai_analysis(self, raw_data_text):
+        """Envía los datos matemáticos a Gemini para una opinión cualitativa"""
+        if not self.ai_client: return ""
+        
+        prompt = f"""
+        ERES UN ANALISTA DE APUESTAS DEPORTIVAS PROFESIONAL.
+        
+        Analiza la siguiente "Value Bet" detectada por un algoritmo matemático:
+        {raw_data_text}
+        
+        TU TAREA:
+        Dame un comentario MUY BREVE (máximo 2 líneas) validando o advirtiendo sobre el pick.
+        1. ¿Tiene sentido el valor detectado?
+        2. Menciona un factor clave (motivación, racha, localía) que el modelo matemático podría ignorar.
+        
+        FORMATO DE SALIDA (HTML SOLAMENTE):
+        🤖 <b>AI INSIGHT:</b> [Tu comentario aquí]
+        
+        REGLAS:
+        - NO uses Markdown (como **negrita**), usa solo etiquetas HTML <b> y <i>.
+        - Sé directo y escéptico.
+        - Si el EV es muy alto (>20%), advierte sobre posible "trampa" o lesiones.
+        """
+        
+        try:
+            response = self.ai_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            return f"\n───────────────\n{response.text}"
+        except Exception as e:
+            return "" # Si falla la IA, no rompemos el reporte, solo lo omitimos
 
     # --- MOTOR MATEMÁTICO ---
     def calculate_form_exponential(self, df, team, metric_col_h, metric_col_a):
@@ -181,12 +226,10 @@ class ValueSniperBot:
             
         return final_xg_h, final_xg_a
 
-    # --- SIMULACIÓN AVANZADA ---
     def simulate_match(self, xg_h, xg_a):
         h_sim = np.random.poisson(xg_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(xg_a, SIMULATION_RUNS)
         
-        # 1. 1X2
         win_h = np.mean(h_sim > a_sim)
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
@@ -195,28 +238,18 @@ class ValueSniperBot:
             adj = 0.025
             draw += adj; win_h -= adj/2; win_a -= adj/2
             
-        # 2. Mercados
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         over25 = np.mean((h_sim + a_sim) > 2.5)
-        
-        # Doble Oportunidad
         dc_1x = win_h + draw
         dc_x2 = win_a + draw
         
-        # DNB
         total_win = win_h + win_a
         dnb_h = win_h / total_win if total_win > 0 else 0
         dnb_a = win_a / total_win if total_win > 0 else 0
         
-        # Asian Handicap (Positivo y Negativo)
-        # Prob de que H cubra -1.5 (Gana por 2+)
         ah_h_minus15 = np.mean((h_sim - 1.5) > a_sim)
-        # Prob de que H cubra +1.5 (Gana, empata o pierde por 1)
         ah_h_plus15 = np.mean((h_sim + 1.5) > a_sim)
-        
-        # Prob de que A cubra -1.5
         ah_a_minus15 = np.mean((a_sim - 1.5) > h_sim)
-        # Prob de que A cubra +1.5
         ah_a_plus15 = np.mean((a_sim + 1.5) > h_sim)
 
         return {
@@ -233,7 +266,6 @@ class ValueSniperBot:
         q = 1 - prob
         b = odds - 1
         kelly_full = (b * prob - q) / b
-        
         if kelly_full <= 0: return 0.0
         
         drawdown_factor = 1.0
@@ -251,11 +283,9 @@ class ValueSniperBot:
 
     def audit_results(self):
         if not os.path.exists(HISTORY_FILE): return
-        
         rows = []
         updated = False
         print("🔎 Auditando resultados...", flush=True)
-        
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
@@ -264,44 +294,26 @@ class ValueSniperBot:
                     div = None
                     for code, cfg in LEAGUE_CONFIG.items():
                         if cfg['name'] == row['League']: div = code; break
-                    
                     if div:
                         data = self.get_league_data(div)
                         if data:
                             raw = data['raw_df']
                             match_date = pd.to_datetime(row['Date'], dayfirst=True)
                             real_home = difflib.get_close_matches(row['Home'], data['teams'], n=1, cutoff=0.6)
-                            
                             if real_home:
                                 rh = real_home[0]
-                                mask = (
-                                    (raw['Date'] >= match_date - timedelta(days=2)) & 
-                                    (raw['Date'] <= match_date + timedelta(days=2)) & 
-                                    (raw['HomeTeam'] == rh)
-                                )
+                                mask = ((raw['Date'] >= match_date - timedelta(days=2)) & (raw['Date'] <= match_date + timedelta(days=2)) & (raw['HomeTeam'] == rh))
                                 match = raw[mask]
-                                
                                 if not match.empty:
                                     try:
-                                        fthg = int(match.iloc[0]['FTHG'])
-                                        ftag = int(match.iloc[0]['FTAG'])
-                                        pick = row['Pick']
-                                        market_odd = float(row['Market_Odd'])
-                                        stake_rec = float(row['Stake_Rec'])
-                                        
+                                        fthg = int(match.iloc[0]['FTHG']); ftag = int(match.iloc[0]['FTAG'])
+                                        pick = row['Pick']; market_odd = float(row['Market_Odd']); stake_rec = float(row['Stake_Rec'])
                                         result = "LOSS"; profit = -stake_rec
-                                        
-                                        if "WIN HOME" in pick and fthg > ftag:
-                                            result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
-                                        elif "WIN AWAY" in pick and ftag > fthg:
-                                            result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
-                                        
-                                        row['Result'] = result
-                                        row['Profit'] = round(profit, 4)
-                                        updated = True
+                                        if "WIN HOME" in pick and fthg > ftag: result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
+                                        elif "WIN AWAY" in pick and ftag > fthg: result = "WIN"; profit = (stake_rec * market_odd) - stake_rec
+                                        row['Result'] = result; row['Profit'] = round(profit, 4); updated = True
                                     except: pass
                 rows.append(row)
-        
         if updated:
             with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -312,7 +324,6 @@ class ValueSniperBot:
     # --- EJECUCIÓN PRINCIPAL ---
     def run_analysis(self):
         self.audit_results()
-
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando Value Hunter Scan: {today}", flush=True)
         
@@ -329,63 +340,46 @@ class ValueSniperBot:
         try:
             print(f"📡 Descargando desde {url_fixt}...", flush=True)
             r = requests.get(url_fixt, headers=headers, timeout=25)
-            
             if r.status_code != 200:
-                self.send_msg(f"⚠️ Error HTTP descarga: {r.status_code}")
-                return
-
+                self.send_msg(f"⚠️ Error HTTP descarga: {r.status_code}"); return
+            
             try: content = r.content.decode('utf-8-sig')
             except: content = r.content.decode('latin-1')
 
-            try:
-                fixtures = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
-            except:
-                fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', on_bad_lines='skip')
+            try: fixtures = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
+            except: fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', on_bad_lines='skip')
             
             fixtures.columns = fixtures.columns.str.strip().str.replace('ï»¿', '')
-            
             if 'Div' not in fixtures.columns or 'Date' not in fixtures.columns:
-                print(f"❌ COLUMNAS DETECTADAS: {fixtures.columns.tolist()}", flush=True)
-                self.send_msg(f"⚠️ Error formato crítico: No se encuentran columnas Div/Date.")
-                return
+                print(f"❌ COLUMNAS: {fixtures.columns.tolist()}", flush=True)
+                self.send_msg(f"⚠️ Error formato crítico."); return
 
             fixtures['Date'] = pd.to_datetime(fixtures['Date'], dayfirst=True, errors='coerce')
         
         except Exception as e:
-            self.send_msg(f"⚠️ Excepción sistémica: {str(e)}")
-            print(f"DEBUG EXCEPTION: {e}", flush=True)
-            return
+            self.send_msg(f"⚠️ Excepción sistémica: {str(e)}"); return
 
         target_date = pd.to_datetime(today, dayfirst=True)
         daily = fixtures[(fixtures['Date'] >= target_date) & (fixtures['Date'] <= target_date + timedelta(days=1))]
         
         if daily.empty:
-            print(f"ℹ️ DB OK. Sin partidos para {today}", flush=True)
-            self.send_msg(f"💤 Sin partidos detectados para hoy/mañana.")
-            return
+            self.send_msg(f"💤 Sin partidos detectados."); return
 
         bets_found = 0
         print(f"⚽ Analizando {len(daily)} partidos...", flush=True)
         
         for idx, row in daily.iterrows():
             if 'Div' not in row or pd.isna(row['Div']): continue
-
             div = row['Div']
             if div not in LEAGUE_CONFIG: continue
             
-            home_team = row.get('HomeTeam')
-            away_team = row.get('AwayTeam')
-            
+            home_team = row.get('HomeTeam'); away_team = row.get('AwayTeam')
             try:
-                odd_h = row.get('B365H', row.get('AvgH', 0))
-                odd_d = row.get('B365D', row.get('AvgD', 0))
-                odd_a = row.get('B365A', row.get('AvgA', 0))
-                odd_h = float(odd_h) if odd_h else 0.0
-                odd_a = float(odd_a) if odd_a else 0.0
-            except: odd_h, odd_d, odd_a = 0.0, 0.0, 0.0
+                odd_h = float(row.get('B365H', row.get('AvgH', 0)) or 0)
+                odd_a = float(row.get('B365A', row.get('AvgA', 0)) or 0)
+            except: odd_h, odd_a = 0.0, 0.0
 
-            if odd_h <= 1.01 or odd_a <= 1.01: continue
-
+            if odd_h <= 1.01: continue
             data = self.get_league_data(div)
             if not data: continue
             
@@ -395,40 +389,28 @@ class ValueSniperBot:
             
             rh, ra = real_h[0], real_a[0]
             xg_h, xg_a = self.calculate_xg(rh, ra, data)
-            
-            # SIMULACIÓN COMPLETA
             sim_res = self.simulate_match(xg_h, xg_a)
             ph, pd_raw, pa = sim_res['1x2']
             
-            ev_h = (ph * odd_h) - 1
-            ev_a = (pa * odd_a) - 1
-            
+            ev_h = (ph * odd_h) - 1; ev_a = (pa * odd_a) - 1
             best_pick = None
-            if ev_h > MIN_EV_THRESHOLD:
-                best_pick = {'type': 'HOME', 'team': rh, 'prob': ph, 'odd': odd_h, 'ev': ev_h}
-            elif ev_a > MIN_EV_THRESHOLD:
-                best_pick = {'type': 'AWAY', 'team': ra, 'prob': pa, 'odd': odd_a, 'ev': ev_a}
+            if ev_h > MIN_EV_THRESHOLD: best_pick = {'type': 'HOME', 'team': rh, 'prob': ph, 'odd': odd_h, 'ev': ev_h}
+            elif ev_a > MIN_EV_THRESHOLD: best_pick = {'type': 'AWAY', 'team': ra, 'prob': pa, 'odd': odd_a, 'ev': ev_a}
             
             if best_pick:
                 bets_found += 1
                 stake_pct = self.get_kelly_stake(best_pick['prob'], best_pick['odd'])
-                
                 stake_blocks = int(stake_pct * 100 * 2)
                 stake_bar = "🟩" * stake_blocks + "⬜" * (5 - stake_blocks)
                 
-                # Conversión a American Odds
                 odd_am = self.dec_to_am(best_pick['odd'])
-                fair_odd_dec = 1/best_pick['prob']
-                fair_odd_am = self.dec_to_am(fair_odd_dec)
+                fair_odd_am = self.dec_to_am(1/best_pick['prob'])
                 
-                # Stats X-Ray
                 ov25, btts = sim_res['goals']
                 dc1x, dcx2 = sim_res['dc']
                 dnb_h, dnb_a = sim_res['dnb']
-                
-                # Handicap Lines
-                ah_h_n, ah_h_p = sim_res['ah_h'] # H -1.5, H +1.5
-                ah_a_n, ah_a_p = sim_res['ah_a'] # A -1.5, A +1.5
+                ah_h_n, ah_h_p = sim_res['ah_h']
+                ah_a_n, ah_a_p = sim_res['ah_a']
                 
                 msg = (
                     f"💎 <b>VALUE DETECTADO</b> | {LEAGUE_CONFIG[div]['name']}\n"
@@ -451,29 +433,23 @@ class ValueSniperBot:
                     f"───────────────\n"
                     f"📊 xG: {rh} {xg_h:.2f} - {xg_a:.2f} {ra}"
                 )
-                self.send_msg(msg)
+                
+                # --- GEMINI INJECTION ---
+                ai_insight = self.get_ai_analysis(msg)
+                full_msg = msg + ai_insight
+                self.send_msg(full_msg)
+                # ------------------------
                 
                 with open(HISTORY_FILE, mode='a', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
-                    writer.writerow([
-                        today, LEAGUE_CONFIG[div]['name'], rh, ra, 
-                        f"WIN {best_pick['type']}", 
-                        f"{best_pick['prob']:.3f}", 
-                        best_pick['odd'], 
-                        f"{best_pick['ev']:.3f}", 
-                        f"{stake_pct:.4f}", 
-                        "PENDING", 0
-                    ])
+                    writer.writerow([today, LEAGUE_CONFIG[div]['name'], rh, ra, f"WIN {best_pick['type']}", f"{best_pick['prob']:.3f}", best_pick['odd'], f"{best_pick['ev']:.3f}", f"{stake_pct:.4f}", "PENDING", 0])
 
         if bets_found == 0:
             self.send_msg(f"🧹 Barrido completado: Sin valor detectado hoy (> {MIN_EV_THRESHOLD*100}% EV).")
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v46. Hora target: {RUN_TIME}", flush=True)
-    
-    if os.getenv("SELF_TEST", "False") == "True": 
-        bot.run_analysis()
-        
+    print(f"🤖 BOT VALUE HUNTER v47. Hora target: {RUN_TIME}", flush=True)
+    if os.getenv("SELF_TEST", "False") == "True": bot.run_analysis()
     schedule.every().day.at(RUN_TIME).do(bot.run_analysis)
     while True: schedule.run_pending(); time.sleep(60)
