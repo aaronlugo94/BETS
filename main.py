@@ -10,15 +10,13 @@ import csv
 import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v54.0 (DIRECT REST API) ---
+# --- CONFIGURACIÓN EURO-SNIPER v55.0 (ANTI-FLOOD & STABLE) ---
 
-# 1. API KEYS (Rellena aquí si no usas variables de entorno)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "") 
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-# Pega tu key aquí dentro de las comillas si os.getenv no te funciona
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "") 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "21:00" 
+RUN_TIME = "09:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -58,9 +56,9 @@ class OmniHybridBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- OMNI-HYBRID v54 (REST API) STARTED ---", flush=True)
+        print("--- OMNI-HYBRID v55 (ANTI-FLOOD) STARTED ---", flush=True)
         if not GEMINI_API_KEY:
-            print("⚠️ ADVERTENCIA: No se detectó GEMINI_API_KEY. La IA no funcionará.", flush=True)
+            print("⚠️ ADVERTENCIA: No se detectó GEMINI_API_KEY.", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -68,30 +66,48 @@ class OmniHybridBot:
                 writer = csv.writer(f)
                 writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Result', 'Profit'])
 
-    def send_msg(self, text):
+    # --- TELEGRAM ROBUSTO (ANTI-FLOOD) ---
+    def send_msg(self, text, retry_count=0):
         if not TELEGRAM_TOKEN: 
-            print(f"[TELEGRAM MOCK] {text}")
+            print(f"[MOCK MSG] {text}")
             return
+
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-        try: 
-            r = requests.post(url, json=payload, timeout=10)
+        
+        try:
+            r = requests.post(url, json=payload, timeout=15)
+            
+            # Si recibimos error 429 (Too Many Requests)
+            if r.status_code == 429:
+                retry_after = int(r.json().get('parameters', {}).get('retry_after', 30))
+                print(f"⚠️ Telegram Flood Control: Esperando {retry_after}s...", flush=True)
+                time.sleep(retry_after + 2) # Esperamos lo que pide + 2 segs extra
+                if retry_count < 3:
+                    self.send_msg(text, retry_count + 1)
+                return
+
             if r.status_code != 200:
                 print(f"Error Telegram: {r.text}", flush=True)
+                
         except Exception as e: 
             print(f"Excepción Telegram: {e}", flush=True)
+        
+        # PAUSA OBLIGATORIA ENTRE MENSAJES (Para evitar el ban)
+        time.sleep(3.5) 
 
     def dec_to_am(self, decimal_odd):
         if decimal_odd <= 1.01: return "-10000"
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    # --- NUEVO MOTOR GEMINI (SIN LIBRERÍAS EXTERNAS) ---
+    # --- MOTOR GEMINI REST API (CORREGIDO) ---
     def call_gemini_api(self, prompt_text):
-        """Llamada directa a la API REST de Google para evitar errores de librería"""
         if not GEMINI_API_KEY: return None
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        # Endpoint corregido para 1.5 Flash Latest (Más estable)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
+        
         headers = {'Content-Type': 'application/json'}
         payload = {
             "contents": [{
@@ -100,18 +116,17 @@ class OmniHybridBot:
         }
         
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=15)
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
             if response.status_code == 200:
-                data = response.json()
-                return data['candidates'][0]['content']['parts'][0]['text']
+                return response.json()['candidates'][0]['content']['parts'][0]['text']
             else:
                 print(f"⚠️ Error Gemini API: {response.status_code} - {response.text}", flush=True)
-                return f"⚠️ Error IA: {response.status_code}"
+                return f"⚠️ Error IA ({response.status_code})"
         except Exception as e:
             print(f"⚠️ Excepción Gemini: {e}", flush=True)
             return None
 
-    # --- ANÁLISIS FINAL (EL JEFE DE ESTRATEGIA) ---
+    # --- ANÁLISIS FINAL ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
 
@@ -120,27 +135,27 @@ class OmniHybridBot:
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        ERES EL JEFE DE ESTRATEGIA DE UN FONDO DE APUESTAS DEPORTIVAS.
+        ERES EL JEFE DE ESTRATEGIA DE UN FONDO DE APUESTAS (TIPSTER PRO).
         
-        Analiza esta lista de oportunidades detectadas hoy:
+        Cartera de hoy:
         ---
         {picks_text}
         ---
         
-        GENERA UN RESUMEN EJECUTIVO (Formato HTML Telegram):
+        GENERA UN RESUMEN ESTRATÉGICO (HTML para Telegram):
         
-        🧠 <b>RESUMEN ESTRATÉGICO</b>
+        🧠 <b>RESUMEN DEL DÍA</b>
         
         🏆 <b>EL BANKER (Más Seguro):</b>
-        [Elige uno. Explica por qué es el más sólido para stake alto]
+        [Selecciona el pick más sólido]
         
         💎 <b>LA JOYA (Mejor Valor):</b>
-        [Elige el de mejor relación Riesgo/Cuota. No necesariamente el más seguro, sino el más rentable a largo plazo]
+        [Selecciona el mejor EV sin riesgo excesivo]
         
-        💣 <b>ZONA DE RIESGO:</b>
-        [Advierte sobre 1 partido que parezca trampa o muy volátil]
+        💣 <b>ALERTA DE RIESGO:</b>
+        [Advierte sobre 1 partido peligroso]
         
-        📝 <b>Conclusión:</b> [1 frase motivacional o técnica]
+        📝 <b>Conclusión:</b> [Frase final]
         """
         
         ai_response = self.call_gemini_api(prompt)
@@ -148,9 +163,9 @@ class OmniHybridBot:
         if ai_response:
             self.send_msg(ai_response)
         else:
-            self.send_msg("❌ <b>Error:</b> El Jefe de Estrategia no pudo conectar (API Error).")
+            self.send_msg("❌ <b>Error:</b> Jefe de Estrategia desconectado.")
 
-    # --- MOTOR MATEMÁTICO ---
+    # --- MATEMÁTICAS ---
     def calculate_xg_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0
@@ -262,9 +277,11 @@ class OmniHybridBot:
         if o_h > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
+            
             o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93; o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
             add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
             add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
+            
             o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92; o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
             add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
             add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
