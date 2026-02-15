@@ -9,11 +9,11 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v44.0 (UTF-8 FIX) ---
+# --- CONFIGURACIÓN EURO-SNIPER v45.0 (HYBRID ULTIMATE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "03:56" 
+RUN_TIME = "04:05" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -53,7 +53,7 @@ class ValueSniperBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v44 (UTF-8 FIX) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v45 (HYBRID ANALYTICS) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -96,7 +96,6 @@ class ValueSniperBot:
             r = requests.get(url, headers={'User-Agent': USER_AGENTS[0]}, timeout=15)
             if r.status_code != 200: return None
             
-            # FIX DE CODIFICACIÓN TAMBIÉN AQUÍ
             try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
             except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
             
@@ -173,19 +172,48 @@ class ValueSniperBot:
             
         return final_xg_h, final_xg_a
 
+    # --- SIMULACIÓN AVANZADA (Full Markets) ---
     def simulate_match(self, xg_h, xg_a):
         h_sim = np.random.poisson(xg_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(xg_a, SIMULATION_RUNS)
         
+        # 1. 1X2 Principal
         win_h = np.mean(h_sim > a_sim)
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
         
+        # Correction bias
         if (xg_h + xg_a) < 2.35:
             adj = 0.025
             draw += adj; win_h -= adj/2; win_a -= adj/2
             
-        return win_h, draw, win_a
+        # 2. Mercados Secundarios
+        # BTTS (Ambos Marcan)
+        btts = np.mean((h_sim > 0) & (a_sim > 0))
+        
+        # Over/Under 2.5
+        over25 = np.mean((h_sim + a_sim) > 2.5)
+        
+        # Doble Oportunidad
+        dc_1x = win_h + draw
+        dc_x2 = win_a + draw
+        
+        # DNB (Draw No Bet) - Normalizamos eliminando el empate
+        total_win = win_h + win_a
+        dnb_h = win_h / total_win if total_win > 0 else 0
+        dnb_a = win_a / total_win if total_win > 0 else 0
+        
+        # Asian Handicap -1.5 (Gana por 2 o más)
+        ah_h_15 = np.mean((h_sim - 1.5) > a_sim)
+        ah_a_15 = np.mean((a_sim + 1.5) > h_sim) # A cubre +1.5 (pierde por 1, empata o gana)
+
+        return {
+            '1x2': (win_h, draw, win_a),
+            'goals': (over25, btts),
+            'dc': (dc_1x, dc_x2),
+            'dnb': (dnb_h, dnb_a),
+            'ah': (ah_h_15, ah_a_15)
+        }
 
     def get_kelly_stake(self, prob, odds):
         if odds <= 1.0: return 0.0
@@ -268,7 +296,7 @@ class ValueSniperBot:
                 writer.writerows(rows)
             print("✅ Auditoría completada.", flush=True)
 
-    # --- EJECUCIÓN PRINCIPAL v44 (UTF-8 SIG FIX) ---
+    # --- EJECUCIÓN PRINCIPAL ---
     def run_analysis(self):
         self.audit_results()
 
@@ -293,19 +321,14 @@ class ValueSniperBot:
                 self.send_msg(f"⚠️ Error HTTP descarga: {r.status_code}")
                 return
 
-            # --- FIX CRÍTICO: Decodificar con 'utf-8-sig' elimina el BOM \ufeff ---
-            try:
-                content = r.content.decode('utf-8-sig')
-            except:
-                content = r.content.decode('latin-1') # Fallback
+            try: content = r.content.decode('utf-8-sig')
+            except: content = r.content.decode('latin-1')
 
-            # Lectura directa
             try:
                 fixtures = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
             except:
                 fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', on_bad_lines='skip')
             
-            # Limpieza de nombres de columna (Elimina espacios extra y caracteres raros residuales)
             fixtures.columns = fixtures.columns.str.strip().str.replace('ï»¿', '')
             
             if 'Div' not in fixtures.columns or 'Date' not in fixtures.columns:
@@ -359,7 +382,10 @@ class ValueSniperBot:
             
             rh, ra = real_h[0], real_a[0]
             xg_h, xg_a = self.calculate_xg(rh, ra, data)
-            ph, pd_raw, pa = self.simulate_match(xg_h, xg_a)
+            
+            # SIMULACIÓN COMPLETA
+            sim_res = self.simulate_match(xg_h, xg_a)
+            ph, pd_raw, pa = sim_res['1x2']
             
             ev_h = (ph * odd_h) - 1
             ev_a = (pa * odd_a) - 1
@@ -377,6 +403,12 @@ class ValueSniperBot:
                 stake_blocks = int(stake_pct * 100 * 2)
                 stake_bar = "🟩" * stake_blocks + "⬜" * (5 - stake_blocks)
                 
+                # Desempaquetado de stats para reporte
+                ov25, btts = sim_res['goals']
+                dc1x, dcx2 = sim_res['dc']
+                dnb_h, dnb_a = sim_res['dnb']
+                ah_h, ah_a = sim_res['ah']
+                
                 msg = (
                     f"💎 <b>VALUE DETECTADO</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> vs {ra}\n"
@@ -386,6 +418,14 @@ class ValueSniperBot:
                     f"🧠 Prob: <b>{best_pick['prob']*100:.1f}%</b> (Fair: {1/best_pick['prob']:.2f})\n"
                     f"📈 <b>EV: +{best_pick['ev']*100:.1f}%</b>\n"
                     f"🏦 Stake: {stake_bar} ({stake_pct*100:.2f}%)\n"
+                    f"───────────────\n"
+                    f"📊 <b>ANALÍTICA (X-RAY):</b>\n"
+                    f"• 1X2: {ph*100:.0f}% | {pd_raw*100:.0f}% | {pa*100:.0f}%\n"
+                    f"• D.Oport: 1X {dc1x*100:.0f}% | X2 {dcx2*100:.0f}%\n"
+                    f"• BTTS: Sí {btts*100:.0f}% | No {(1-btts)*100:.0f}%\n"
+                    f"• Goles 2.5: + {ov25*100:.0f}% | - {(1-ov25)*100:.0f}%\n"
+                    f"• DNB: H {dnb_h*100:.0f}% | A {dnb_a*100:.0f}%\n"
+                    f"• AH -1.5: H {ah_h*100:.0f}% | A {ah_a*100:.0f}%\n"
                     f"───────────────\n"
                     f"📊 xG: {rh} {xg_h:.2f} - {xg_a:.2f} {ra}"
                 )
@@ -408,7 +448,7 @@ class ValueSniperBot:
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v44. Hora target: {RUN_TIME}", flush=True)
+    print(f"🤖 BOT VALUE HUNTER v45. Hora target: {RUN_TIME}", flush=True)
     
     if os.getenv("SELF_TEST", "False") == "True": 
         bot.run_analysis()
