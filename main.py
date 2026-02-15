@@ -10,13 +10,13 @@ import csv
 import json
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v55.0 (ANTI-FLOOD & STABLE) ---
+# --- CONFIGURACIÓN EURO-SNIPER v56.0 (GEMINI REST FIXED) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "21:14" 
+RUN_TIME = "21:20" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -56,7 +56,7 @@ class OmniHybridBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- OMNI-HYBRID v55 (ANTI-FLOOD) STARTED ---", flush=True)
+        print("--- OMNI-HYBRID v56 (GEMINI REST) STARTED ---", flush=True)
         if not GEMINI_API_KEY:
             print("⚠️ ADVERTENCIA: No se detectó GEMINI_API_KEY.", flush=True)
 
@@ -66,7 +66,7 @@ class OmniHybridBot:
                 writer = csv.writer(f)
                 writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Result', 'Profit'])
 
-    # --- TELEGRAM ROBUSTO (ANTI-FLOOD) ---
+    # --- TELEGRAM ROBUSTO ---
     def send_msg(self, text, retry_count=0):
         if not TELEGRAM_TOKEN: 
             print(f"[MOCK MSG] {text}")
@@ -77,36 +77,30 @@ class OmniHybridBot:
         
         try:
             r = requests.post(url, json=payload, timeout=15)
-            
-            # Si recibimos error 429 (Too Many Requests)
             if r.status_code == 429:
                 retry_after = int(r.json().get('parameters', {}).get('retry_after', 30))
-                print(f"⚠️ Telegram Flood Control: Esperando {retry_after}s...", flush=True)
-                time.sleep(retry_after + 2) # Esperamos lo que pide + 2 segs extra
-                if retry_count < 3:
-                    self.send_msg(text, retry_count + 1)
+                print(f"⚠️ Telegram Flood: Esperando {retry_after}s...", flush=True)
+                time.sleep(retry_after + 2)
+                if retry_count < 3: self.send_msg(text, retry_count + 1)
                 return
-
             if r.status_code != 200:
                 print(f"Error Telegram: {r.text}", flush=True)
-                
         except Exception as e: 
             print(f"Excepción Telegram: {e}", flush=True)
         
-        # PAUSA OBLIGATORIA ENTRE MENSAJES (Para evitar el ban)
-        time.sleep(3.5) 
+        time.sleep(3.5) # Pausa obligatoria
 
     def dec_to_am(self, decimal_odd):
         if decimal_odd <= 1.01: return "-10000"
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    # --- MOTOR GEMINI REST API (CORREGIDO) ---
+    # --- MOTOR GEMINI REST API (URL CORREGIDA) ---
     def call_gemini_api(self, prompt_text):
         if not GEMINI_API_KEY: return None
         
-        # Endpoint corregido para 1.5 Flash Latest (Más estable)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={GEMINI_API_KEY}"
+        # URL ESTÁNDAR Y ESTABLE (v1beta/models/gemini-1.5-flash)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         
         headers = {'Content-Type': 'application/json'}
         payload = {
@@ -116,7 +110,7 @@ class OmniHybridBot:
         }
         
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            response = requests.post(url, headers=headers, json=payload, timeout=25)
             if response.status_code == 200:
                 return response.json()['candidates'][0]['content']['parts'][0]['text']
             else:
@@ -135,7 +129,7 @@ class OmniHybridBot:
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        ERES EL JEFE DE ESTRATEGIA DE UN FONDO DE APUESTAS (TIPSTER PRO).
+        ERES EL JEFE DE ESTRATEGIA DE UN FONDO DE APUESTAS.
         
         Cartera de hoy:
         ---
@@ -169,17 +163,12 @@ class OmniHybridBot:
     def calculate_xg_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0
-        
         w_sot = 0; w_goals = 0; total_w = 0
         for i, (_, row) in enumerate(matches.iterrows()):
-            weight = pow(DECAY_ALPHA, 5 - i)
-            total_w += weight
-            if row['HomeTeam'] == team:
-                sot = row.get('HST', row['FTHG'] * 3); goals = row['FTHG']
-            else:
-                sot = row.get('AST', row['FTAG'] * 3); goals = row['FTAG']
+            weight = pow(DECAY_ALPHA, 5 - i); total_w += weight
+            if row['HomeTeam'] == team: sot = row.get('HST', row['FTHG']*3); goals = row['FTHG']
+            else: sot = row.get('AST', row['FTAG']*3); goals = row['FTAG']
             w_sot += sot * weight; w_goals += goals * weight
-            
         avg_sot = w_sot / total_w; avg_goals = w_goals / total_w
         return (avg_sot * 0.40) + (avg_goals * 0.60)
 
@@ -225,7 +214,6 @@ class OmniHybridBot:
     def simulate_match(self, home, away, league_data):
         s = league_data['strength']
         avg_g = league_data['avg_g'] / 2
-        
         xg_h = min(3.2, s.get(home, 1.0) * avg_g * 1.20)
         xg_a = min(3.2, s.get(away, 1.0) * avg_g)
         
@@ -239,29 +227,19 @@ class OmniHybridBot:
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         over25 = np.mean((h_sim + a_sim) > 2.5)
         
-        dc_1x = win_h + draw
-        dc_x2 = win_a + draw
-        dnb_h = win_h / (win_h + win_a)
-        dnb_a = win_a / (win_h + win_a)
+        dc_1x = win_h + draw; dc_x2 = win_a + draw
+        dnb_h = win_h / (win_h + win_a); dnb_a = win_a / (win_h + win_a)
         
-        ah_h_m15 = np.mean((h_sim - 1.5) > a_sim)
-        ah_h_p15 = np.mean((h_sim + 1.5) > a_sim)
-        ah_a_m15 = np.mean((a_sim - 1.5) > h_sim)
-        ah_a_p15 = np.mean((a_sim + 1.5) > h_sim)
+        ah_h_m15 = np.mean((h_sim - 1.5) > a_sim); ah_h_p15 = np.mean((h_sim + 1.5) > a_sim)
+        ah_a_m15 = np.mean((a_sim - 1.5) > h_sim); ah_a_p15 = np.mean((a_sim + 1.5) > h_sim)
         
         return {
-            'xg': (xg_h, xg_a),
-            '1x2': (win_h, draw, win_a),
-            'goals': (over25, btts),
-            'dc': (dc_1x, dc_x2),
-            'dnb': (dnb_h, dnb_a),
-            'ah_h': (ah_h_m15, ah_h_p15),
-            'ah_a': (ah_a_m15, ah_a_p15)
+            'xg': (xg_h, xg_a), '1x2': (win_h, draw, win_a), 'goals': (over25, btts),
+            'dc': (dc_1x, dc_x2), 'dnb': (dnb_h, dnb_a), 'ah_h': (ah_h_m15, ah_h_p15), 'ah_a': (ah_a_m15, ah_a_p15)
         }
 
     def find_best_value(self, sim, odds_row):
         candidates = []
-        
         def add(name, market, prob, odd):
             if odd < 1.05: return
             ev = (prob * odd) - 1
@@ -277,14 +255,10 @@ class OmniHybridBot:
         if o_h > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], o_h)
             add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
-            
-            o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93; o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
-            add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
-            add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
-            
-            o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92; o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
-            add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
-            add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
+            add("DNB HOME", "DNB", sim['dnb'][0], (o_h * (1 - (1/o_d))) * 0.93)
+            add("DNB AWAY", "DNB", sim['dnb'][1], (o_a * (1 - (1/o_d))) * 0.93)
+            add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/o_h) + (1/o_d)) * 0.92)
+            add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/o_a) + (1/o_d)) * 0.92)
 
         if o_o25 > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25)
