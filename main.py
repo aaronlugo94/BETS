@@ -9,7 +9,8 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- INTENTO DE IMPORTACIÓN SEGURA DE GEMINI ---
+# --- CONFIGURACIÓN EURO-SNIPER v52.0 (OMNI-HYBRID MASTER) ---
+
 try:
     from google import genai
     GEMINI_AVAILABLE = True
@@ -17,26 +18,24 @@ except ImportError:
     GEMINI_AVAILABLE = False
     print("⚠️ Gemini no detectado. Modo Matemático Puro.")
 
-# --- CONFIGURACIÓN EURO-SNIPER v51.0 (OMNI-MARKET) ---
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "06:04" 
+RUN_TIME = "06:14" 
 
-# AJUSTES DE MODELO (SHOT-BASED XG)
+# AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.89          
+DECAY_ALPHA = 0.88          
 WEIGHT_GOALS = 0.60         
 WEIGHT_SOT = 0.40           
 SEASON = '2526'             
-HISTORY_FILE = "historial_omni_bets.csv"
+HISTORY_FILE = "historial_omni_hybrid.csv"
 
 # GESTIÓN DE RIESGO
 KELLY_FRACTION = 0.20       
 MAX_STAKE_PCT = 0.04        
-MIN_EV_THRESHOLD = 0.02     # Umbral más bajo porque buscamos "la mejor" de muchas
+MIN_EV_THRESHOLD = 0.03     
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -54,10 +53,11 @@ LEAGUE_CONFIG = {
     'T1':  {'name': '🇹🇷 TURQUIA', 'tier': 2}
 }
 
-class OmniSniperBot:
+class OmniHybridBot:
     def __init__(self):
         self.fixtures = None
         self.history_cache = {} 
+        self.daily_picks_buffer = [] # Memoria para el reporte final
         self._check_creds()
         self._init_history_file()
         
@@ -65,17 +65,17 @@ class OmniSniperBot:
         if GEMINI_AVAILABLE and GEMINI_API_KEY:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                print("🧠 Gemini AI: ACTIVO (Modo Omni-Analista)", flush=True)
+                print("🧠 Gemini AI: CONECTADO (Modo Jefe de Estrategia)", flush=True)
             except: pass
 
     def _check_creds(self):
-        print("--- OMNI-MARKET SNIPER v51 STARTED ---", flush=True)
+        print("--- OMNI-HYBRID ENGINE v52 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick_Type', 'Market', 'Prob', 'Odd', 'EV', 'Stake', 'Result', 'Profit'])
+                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Result', 'Profit'])
 
     def send_msg(self, text):
         if not TELEGRAM_TOKEN: 
@@ -91,44 +91,76 @@ class OmniSniperBot:
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    def get_ai_analysis(self, match, pick):
-        if not self.ai_client: return ""
+    # --- FUNCIONES DE FORMA (🔥/🧊) ---
+    def get_team_form_icon(self, df, team):
+        # Busca los últimos 5 partidos
+        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
+        if len(matches) == 0: return "➡️"
+        
+        points = 0
+        possible = len(matches) * 3
+        
+        for _, row in matches.iterrows():
+            if row['HomeTeam'] == team:
+                if row['FTHG'] > row['FTAG']: points += 3
+                elif row['FTHG'] == row['FTAG']: points += 1
+            else:
+                if row['FTAG'] > row['FTHG']: points += 3
+                elif row['FTAG'] == row['FTHG']: points += 1
+        
+        pct = points / possible
+        if pct >= 0.7: return "🔥"
+        if pct <= 0.3: return "🧊"
+        return "➡️"
+
+    # --- GEMINI: ANÁLISIS GLOBAL FINAL ---
+    def generate_final_summary(self):
+        if not self.ai_client or not self.daily_picks_buffer: return
+
+        picks_text = "\n".join(self.daily_picks_buffer)
+        
         prompt = f"""
-        ANALISTA APUESTAS PRO.
-        Partido: {match}
-        El algoritmo ha elegido EL MEJOR PICK POSIBLE entre todos los mercados: {pick}
+        ACTÚA COMO UN EXPERTO ESTRATEGA DE APUESTAS DEPORTIVAS.
         
-        Tarea:
-        1. ¿Por qué este mercado es mejor que simplemente apostar al ganador?
-        2. Breve riesgo a considerar.
+        Aquí tienes la lista de "Value Bets" detectadas hoy por mi algoritmo matemático:
+        ---
+        {picks_text}
+        ---
         
-        Output HTML: 🤖 <b>AI TACTICS:</b> [Texto]
+        TU MISIÓN (Resumen Final):
+        1. 🏆 **EL BANKER:** ¿Cuál es la apuesta más segura del día? (Alta probabilidad + Valor).
+        2. 💰 **LA JOYA DE VALOR:** ¿Cuál tiene el EV más interesante sin ser una locura imposible?
+        3. ⚠️ **ADVERTENCIA:** Si ves algún patrón peligroso (ej: muchos visitantes favoritos), avisa.
+        
+        FORMATO DE SALIDA (HTML para Telegram):
+        Usar encabezado: 🧠 <b>RESUMEN DEL JEFE DE ESTRATEGIA</b>
         """
+        
         try:
-            r = self.ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
-            return f"\n───────────────\n{r.text}"
-        except: return ""
+            response = self.ai_client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            self.send_msg(response.text)
+        except Exception as e:
+            print(f"Error Gemini Final: {e}")
 
     # --- MOTOR MATEMÁTICO ---
-    def calculate_advanced_stats(self, df, team):
-        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(8)
+    def calculate_xg_stats(self, df, team):
+        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0
         
         w_sot = 0; w_goals = 0; total_w = 0
         for i, (_, row) in enumerate(matches.iterrows()):
-            weight = pow(DECAY_ALPHA, 7 - i)
+            weight = pow(DECAY_ALPHA, 5 - i)
             total_w += weight
             if row['HomeTeam'] == team:
-                sot = row.get('HST', row['FTHG'] * 2.5) 
-                goals = row['FTHG']
+                sot = row.get('HST', row['FTHG'] * 3); goals = row['FTHG']
             else:
-                sot = row.get('AST', row['FTAG'] * 2.5)
-                goals = row['FTAG']
-            w_sot += sot * weight
-            w_goals += goals * weight
+                sot = row.get('AST', row['FTAG'] * 3); goals = row['FTAG']
+            w_sot += sot * weight; w_goals += goals * weight
             
-        avg_sot = w_sot / total_w
-        avg_goals = w_goals / total_w
+        avg_sot = w_sot / total_w; avg_goals = w_goals / total_w
         return (avg_sot * 0.40) + (avg_goals * 0.60)
 
     def get_league_data(self, div):
@@ -139,149 +171,124 @@ class OmniSniperBot:
             if r.status_code != 200: return None
             try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
             except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
-            
             df = df.dropna(subset=['FTHG', 'FTAG'])
+            
             avg_xg_league = 0; cnt = 0
             teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
             team_xgs = {}
             for t in teams:
-                xg = self.calculate_advanced_stats(df, t)
-                team_xgs[t] = xg
-                avg_xg_league += xg
-                cnt += 1
+                xg = self.calculate_xg_stats(df, t)
+                team_xgs[t] = xg; avg_xg_league += xg; cnt += 1
             avg_xg_league /= cnt
             
-            normalized_strength = {t: val/avg_xg_league for t, val in team_xgs.items()}
-            self.history_cache[div] = {'strength': normalized_strength, 'teams': teams, 'avg_goals': df.FTHG.mean() + df.FTAG.mean()}
+            norm_strength = {t: val/avg_xg_league for t, val in team_xgs.items()}
+            self.history_cache[div] = {'strength': norm_strength, 'teams': teams, 'raw_df': df, 'avg_g': df.FTHG.mean()+df.FTAG.mean()}
             return self.history_cache[div]
         except: return None
 
     def simulate_match(self, home, away, league_data):
         s = league_data['strength']
-        avg_g = league_data['avg_goals'] / 2
+        avg_g = league_data['avg_g'] / 2
         
-        xg_h = min(3.5, s.get(home, 1.0) * avg_g * 1.25) # Home advantage
-        xg_a = min(3.5, s.get(away, 1.0) * avg_g)
+        # xG Clamping para evitar locuras de 7 goles
+        xg_h = min(3.2, s.get(home, 1.0) * avg_g * 1.20)
+        xg_a = min(3.2, s.get(away, 1.0) * avg_g)
         
         h_sim = np.random.poisson(xg_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(xg_a, SIMULATION_RUNS)
         
-        # Probabilidades Fundamentales
         win_h = np.mean(h_sim > a_sim)
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
         
-        # Mercados de Goles
-        total_goals = h_sim + a_sim
-        over25 = np.mean(total_goals > 2.5)
-        under25 = np.mean(total_goals < 2.5)
         btts = np.mean((h_sim > 0) & (a_sim > 0))
-        btts_no = 1.0 - btts
+        over25 = np.mean((h_sim + a_sim) > 2.5)
         
-        # Mercados Derivados
         dc_1x = win_h + draw
         dc_x2 = win_a + draw
         dnb_h = win_h / (win_h + win_a)
         dnb_a = win_a / (win_h + win_a)
         
+        ah_h_m15 = np.mean((h_sim - 1.5) > a_sim)
+        ah_h_p15 = np.mean((h_sim + 1.5) > a_sim)
+        ah_a_m15 = np.mean((a_sim - 1.5) > h_sim)
+        ah_a_p15 = np.mean((a_sim + 1.5) > h_sim)
+        
         return {
             'xg': (xg_h, xg_a),
             '1x2': (win_h, draw, win_a),
-            'ou': (over25, under25),
-            'btts': (btts, btts_no),
+            'goals': (over25, btts),
             'dc': (dc_1x, dc_x2),
-            'dnb': (dnb_h, dnb_a)
+            'dnb': (dnb_h, dnb_a),
+            'ah_h': (ah_h_m15, ah_h_p15),
+            'ah_a': (ah_a_m15, ah_a_p15)
         }
 
-    # --- EL CEREBRO: SELECCIONA EL MEJOR PICK DE TODOS ---
+    # --- SELECCIÓN DEL MEJOR PICK (AJUSTADA PARA SEGURIDAD) ---
     def find_best_value(self, sim, odds_row):
         candidates = []
         
-        # Helper para calcular EV y añadir a candidatos
-        def add_cand(name, market_type, prob, odd):
+        def add(name, market, prob, odd):
             if odd < 1.05: return
             ev = (prob * odd) - 1
-            # Score = Mix de EV y Probabilidad (Preferimos alta probabilidad para stakes altos)
-            score = ev * (prob ** 0.5) 
+            # FÓRMULA DE CALIDAD: EV * Probabilidad al cuadrado
+            # Esto mata las cuotas 11.00 con baja probabilidad
+            score = ev * (prob * prob) 
             if ev > MIN_EV_THRESHOLD:
-                candidates.append({
-                    'pick': name,
-                    'market': market_type,
-                    'prob': prob,
-                    'odd': odd,
-                    'ev': ev,
-                    'score': score
-                })
+                candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score})
 
-        # 1. Mercado 1X2
+        # Extraer cuotas
         try:
-            o_h = float(odds_row.get('B365H', odds_row.get('AvgH', 0)))
-            o_d = float(odds_row.get('B365D', odds_row.get('AvgD', 0)))
-            o_a = float(odds_row.get('B365A', odds_row.get('AvgA', 0)))
-            add_cand("GANA HOME", "1X2", sim['1x2'][0], o_h)
-            add_cand("GANA AWAY", "1X2", sim['1x2'][2], o_a)
-        except: pass
+            o_h = float(odds_row.get('B365H', 0)); o_d = float(odds_row.get('B365D', 0)); o_a = float(odds_row.get('B365A', 0))
+            o_o25 = float(odds_row.get('B365>2.5', 0)); o_u25 = float(odds_row.get('B365<2.5', 0))
+        except: return None
 
-        # 2. Mercado Goles (Over/Under)
-        try:
-            o_o25 = float(odds_row.get('B365>2.5', odds_row.get('Avg>2.5', 0)))
-            o_u25 = float(odds_row.get('B365<2.5', odds_row.get('Avg<2.5', 0)))
-            add_cand("OVER 2.5 GOLES", "GOALS", sim['ou'][0], o_o25)
-            add_cand("UNDER 2.5 GOLES", "GOALS", sim['ou'][1], o_u25)
-        except: pass
-
-        # 3. Mercados Sintéticos (Estimamos cuota si no existe, basándonos en 1X2 con margen)
-        # Esto permite evaluar DNB/DC aunque no vengan en el CSV
-        if o_h > 0 and o_d > 0 and o_a > 0:
-            # DNB (Draw No Bet)
-            margin_dnb = 0.93
-            odd_dnb_h = (o_h * (1 - (1/o_d))) * margin_dnb
-            odd_dnb_a = (o_a * (1 - (1/o_d))) * margin_dnb
-            add_cand("DNB HOME (Sin Empate)", "DNB", sim['dnb'][0], odd_dnb_h)
-            add_cand("DNB AWAY (Sin Empate)", "DNB", sim['dnb'][1], odd_dnb_a)
+        if o_h > 0:
+            add("GANA HOME", "1X2", sim['1x2'][0], o_h)
+            add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
             
-            # DC (Double Chance)
-            margin_dc = 0.92
-            odd_1x = (1 / ((1/o_h) + (1/o_d))) * margin_dc
-            odd_x2 = (1 / ((1/o_a) + (1/o_d))) * margin_dc
-            add_cand("DC 1X (Local o Empate)", "DC", sim['dc'][0], odd_1x)
-            add_cand("DC X2 (Visita o Empate)", "DC", sim['dc'][1], odd_x2)
+            # Mercados derivados (DNB, DC)
+            o_dnb_h = (o_h * (1 - (1/o_d))) * 0.93
+            o_dnb_a = (o_a * (1 - (1/o_d))) * 0.93
+            add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
+            add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
+            
+            o_dc_h = 1 / ((1/o_h) + (1/o_d)) * 0.92
+            o_dc_a = 1 / ((1/o_a) + (1/o_d)) * 0.92
+            add("DC 1X", "Double Chance", sim['dc'][0], o_dc_h)
+            add("DC X2", "Double Chance", sim['dc'][1], o_dc_a)
 
-        # 4. BTTS (Si hay datos, si no estimamos aprox con cuotas de goles)
-        # Nota: CSVs básicos a veces no traen BTTS, usaremos estimación si falta
-        # Estimación cruda: Relacionada al Over 2.5
-        # Si Over 2.5 < 1.60 -> BTTS Yes suele estar ~1.65
-        try:
-            # Intenta leer si existe columna BTTS (raro en csv standard, pero intentamos)
-            # Si no, omitimos para no inventar demasiado
-            pass 
-        except: pass
+        if o_o25 > 0:
+            add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25)
+            add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], o_u25)
+            
+        # BTTS Estimado
+        o_btts_y = 1.0 / sim['goals'][1] * 0.9 if sim['goals'][1] > 0 else 0
+        if o_btts_y > 1.4: # Solo si paga decente
+            add("BTTS SÍ", "BTTS", sim['goals'][1], o_btts_y)
 
         if not candidates: return None
-        
-        # Ordenar por SCORE (Balance EV/Prob)
-        # Queremos la que tenga mejor ratio riesgo/beneficio
         candidates.sort(key=lambda x: x['score'], reverse=True)
-        return candidates[0] # Retorna LA MEJOR
+        return candidates[0]
 
     def get_kelly_stake(self, prob, odds):
         if odds <= 1.0: return 0.0
-        q = 1 - prob
-        b = odds - 1
-        kelly = (b * prob - q) / b
-        return max(0.0, min(kelly * KELLY_FRACTION, MAX_STAKE_PCT))
+        q = 1 - prob; b = odds - 1
+        return max(0.0, min(((b * prob - q) / b) * KELLY_FRACTION, MAX_STAKE_PCT))
 
     def run_analysis(self):
+        self.daily_picks_buffer = [] # Reset buffer
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando OMNI-MARKET SCAN: {today}", flush=True)
+        print(f"🚀 Iniciando OMNI-HYBRID SCAN: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
         try:
             r = requests.get(url_fixt, headers={'User-Agent': USER_AGENTS[0]}, timeout=20)
             if r.status_code!=200: return
-            try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
-            except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
+            try: content = r.content.decode('utf-8-sig')
+            except: content = r.content.decode('latin-1')
+            df = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
             df.columns = df.columns.str.strip().str.replace('ï»¿', '')
             df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
         except: return
@@ -303,10 +310,7 @@ class OmniSniperBot:
             if not rh or not ra: continue
             rh = rh[0]; ra = ra[0]
             
-            # 1. Simular Partido COMPLETO
             sim = self.simulate_match(rh, ra, data)
-            
-            # 2. Encontrar LA MEJOR APUESTA entre todos los mercados
             best_bet = self.find_best_value(sim, row)
             
             if best_bet:
@@ -314,36 +318,59 @@ class OmniSniperBot:
                 stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'])
                 stake_viz = "🟩" * int(stake * 100 * 2) + "⬜" * (5 - int(stake * 100 * 2))
                 
-                # Datos X-Ray para el reporte
+                # Iconos de Forma
+                form_h = self.get_team_form_icon(data['raw_df'], rh)
+                form_a = self.get_team_form_icon(data['raw_df'], ra)
+                
+                # Datos X-Ray Completos
                 ph, pd_raw, pa = sim['1x2']
+                dc1x, dcx2 = sim['dc']
+                btts = sim['goals'][1]
+                ov25 = sim['goals'][0]
+                dnb_h, dnb_a = sim['dnb']
+                ah_h_15, ah_a_15 = sim['ah_h'][0], sim['ah_a'][0]
+                ah_h_p15, ah_a_p15 = sim['ah_h'][1], sim['ah_a'][1]
+                
+                fair_odd_us = self.dec_to_am(1/best_bet['prob'])
                 
                 msg = (
-                    f"🛡️ <b>OMNI-SNIPER DETECTED</b> | {LEAGUE_CONFIG[div]['name']}\n"
-                    f"⚽ <b>{rh}</b> vs {ra}\n"
+                    f"💎 <b>VALUE DETECTADO</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
-                    f"🏆 <b>MEJOR OPCIÓN: {best_bet['pick']}</b>\n"
-                    f"📊 Mercado: {best_bet['market']}\n"
+                    f"🎯 PICK: <b>{best_bet['pick']}</b> ({best_bet['market']})\n"
                     f"⚖️ Cuota: <b>{self.dec_to_am(best_bet['odd'])}</b> ({best_bet['odd']:.2f})\n"
-                    f"🧠 Probabilidad: <b>{best_bet['prob']*100:.1f}%</b>\n"
-                    f"📈 Valor (EV): <b>+{best_bet['ev']*100:.1f}%</b>\n"
+                    f"🧠 Prob: <b>{best_bet['prob']*100:.1f}%</b> (Fair: {fair_odd_us})\n"
+                    f"📈 EV: <b>+{best_bet['ev']*100:.1f}%</b>\n"
                     f"🏦 Stake: {stake_viz} ({stake*100:.2f}%)\n"
                     f"───────────────\n"
-                    f"🔍 <b>CONTEXTO:</b>\n"
+                    f"📊 <b>ANALÍTICA (X-RAY):</b>\n"
                     f"• 1X2: {ph*100:.0f}% | {pd_raw*100:.0f}% | {pa*100:.0f}%\n"
-                    f"• Goles Exp: {sim['xg'][0]:.2f} - {sim['xg'][1]:.2f}\n"
-                    f"• Over 2.5: {sim['ou'][0]*100:.0f}%\n"
+                    f"• D.Oport: 1X {dc1x*100:.0f}% | X2 {dcx2*100:.0f}%\n"
+                    f"• BTTS: Sí {btts*100:.0f}% | No {(1-btts)*100:.0f}%\n"
+                    f"• Goals 2.5: Ov {ov25*100:.0f}% | Un {(1-ov25)*100:.0f}%\n"
+                    f"• DNB: H {dnb_h*100:.0f}% | A {dnb_a*100:.0f}%\n"
+                    f"• AH -1.5: H {ah_h_15*100:.0f}% | A {ah_a_15*100:.0f}%\n"
+                    f"• AH +1.5: H {ah_h_p15*100:.0f}% | A {ah_a_p15*100:.0f}%\n"
+                    f"───────────────\n"
+                    f"📊 xG: {rh} {sim['xg'][0]:.2f} - {sim['xg'][1]:.2f} {ra}"
                 )
                 
-                ai_msg = self.get_ai_analysis(f"{rh} vs {ra}", f"{best_bet['pick']} @ {best_bet['odd']:.2f}")
-                self.send_msg(msg + ai_msg)
+                self.send_msg(msg)
+                
+                # Guardar info para Gemini (Resumen Final)
+                self.daily_picks_buffer.append(f"- {rh} vs {ra}: PICK {best_bet['pick']} @ {best_bet['odd']:.2f} (EV +{best_bet['ev']*100:.0f}%)")
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
-                    csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], stake, "PENDING", 0])
+                    csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], "PENDING", 0])
 
-        if bets_found == 0: self.send_msg("🧹 Sin oportunidades de alto valor hoy.")
+        if bets_found > 0:
+            # LLAMADA AL JEFE DE ESTRATEGIA (Gemini)
+            self.generate_final_summary()
+        else:
+            self.send_msg("🧹 Sin oportunidades claras (Filtro de Seguridad Activado).")
 
 if __name__ == "__main__":
-    bot = OmniSniperBot()
+    bot = OmniHybridBot()
     if os.getenv("SELF_TEST", "False") == "True": bot.run_analysis()
     schedule.every().day.at(RUN_TIME).do(bot.run_analysis)
     while True: schedule.run_pending(); time.sleep(60)
