@@ -11,13 +11,13 @@ import json
 import re
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN v61.0 (FORMAT SAFEGUARD) ---
+# --- CONFIGURACIÓN v62.0 (BULLETPROOF MESSENGER) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "22:54" 
+RUN_TIME = "23:13" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -76,7 +76,7 @@ class OmniHybridBot:
             if not GEMINI_API_KEY: print("❌ GEMINI_API_KEY NO ENCONTRADA.", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v61 STARTED ---", flush=True)
+        print("--- ENGINE v62 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -85,9 +85,24 @@ class OmniHybridBot:
                 writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Result', 'Profit'])
 
     # --- TELEGRAM INDESTRUCTIBLE ---
+    def clean_text(self, text):
+        """Elimina etiquetas HTML y caracteres problemáticos para el modo Texto Plano"""
+        text = re.sub(r'<[^>]+>', '', text) # Quitar tags HTML
+        text = text.replace('*', '').replace('_', '').replace('`', '') # Quitar Markdown
+        return text
+
     def send_msg(self, text, retry_count=0, use_html=True):
         if not TELEGRAM_TOKEN: return
         
+        # 1. DIVISOR DE MENSAJES (Chunking)
+        # Telegram no acepta más de 4096 caracteres. Si es más largo, lo partimos.
+        if len(text) > 4000:
+            print(f"⚠️ Mensaje muy largo ({len(text)} chars). Dividiendo...", flush=True)
+            chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for chunk in chunks:
+                self.send_msg(chunk, retry_count, use_html)
+            return
+
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID, 
@@ -98,21 +113,29 @@ class OmniHybridBot:
         try:
             r = requests.post(url, json=payload, timeout=20)
             
-            # Si falla por formato HTML (Error 400), reintentamos SIN formato
+            # CASO A: Fallo por HTML mal formado (Error 400)
             if r.status_code == 400 and use_html:
-                print("⚠️ Error de formato HTML. Reenviando en texto plano...", flush=True)
-                self.send_msg(text, retry_count, use_html=False) # Recursión segura
+                print("⚠️ HTML rechazado por Telegram. Limpiando y enviando texto plano...", flush=True)
+                clean_content = self.clean_text(text)
+                self.send_msg(clean_content, retry_count, use_html=False)
                 return
 
+            # CASO B: Fallo por Flood (Error 429)
             if r.status_code == 429:
-                retry = int(r.json().get('parameters', {}).get('retry_after', 30))
-                time.sleep(retry + 2)
-                if retry_count < 2: self.send_msg(text, retry_count + 1, use_html)
+                retry_sec = int(r.json().get('parameters', {}).get('retry_after', 30))
+                print(f"⏳ Flood Control: Esperando {retry_sec}s...", flush=True)
+                time.sleep(retry_sec + 2)
+                if retry_count < 3: self.send_msg(text, retry_count + 1, use_html)
+                return
+            
+            # CASO C: Otros errores
+            if r.status_code != 200:
+                print(f"❌ Error Telegram ({r.status_code}): {r.text}", flush=True)
                 
         except Exception as e:
-            print(f"Error Telegram: {e}", flush=True)
+            print(f"❌ Excepción Envío: {e}", flush=True)
         
-        time.sleep(3)
+        time.sleep(2) # Pausa cortés
 
     def dec_to_am(self, decimal_odd):
         if decimal_odd <= 1.01: return "-10000"
@@ -121,20 +144,18 @@ class OmniHybridBot:
 
     def call_gemini(self, prompt):
         if not SDK_AVAILABLE or not self.ai_client:
-            return "❌ <b>Error:</b> SDK de IA no disponible."
+            return "❌ SDK no disponible."
             
         try:
-            # Usamos gemini-2.0-flash
+            # Configuración para respuesta plana y directa
             r = self.ai_client.models.generate_content(
                 model="gemini-2.0-flash", 
                 contents=prompt
             )
             return r.text
         except Exception as e:
-            error_str = str(e)
-            print(f"⚠️ Excepción Gemini: {error_str}", flush=True)
-            # Enviar el error a Telegram para debug
-            return f"❌ <b>Error Gemini:</b> {error_str[:150]}"
+            print(f"⚠️ Excepción Gemini: {e}", flush=True)
+            return f"❌ Error Gemini: {str(e)[:100]}"
 
     # --- CÁLCULOS ---
     def calculate_xg_stats(self, df, team):
@@ -279,41 +300,36 @@ class OmniHybridBot:
         
         picks_text = "\n".join(self.daily_picks_buffer)
         
-        # PROMPT ANTIBALAS (FORZANDO HTML SIMPLE)
+        # PROMPT ANTIBALAS: Sin Markdown, solo HTML básico
         prompt = f"""
-        ERES UN GESTOR DE RIESGOS DE APUESTAS.
+        ERES UN TIPSTER EXPERTO (Gestor de Riesgo).
         
-        Analiza estas Value Bets detectadas hoy:
+        Analiza estas apuestas:
         ---
         {picks_text}
         ---
         
-        Genera reporte en HTML PURO (Usa <b>negrita</b>, no uses Markdown **):
+        IMPORTANTE: Responde SOLO con el siguiente formato HTML (No uses Markdown ** ni ##):
         
         🧠 <b>DICTAMEN FINAL</b>
         
-        💎 <b>LA JOYA:</b> [Selecciona la mejor oportunidad riesgo/beneficio]
+        💎 <b>LA JOYA:</b> [Tu selección de valor. Sé breve.]
         
-        🛡️ <b>EL BANKER:</b> [La apuesta más segura]
+        🛡️ <b>EL BANKER:</b> [La apuesta más segura. Sé breve.]
         
-        💣 <b>TRAMPA:</b> [Posible error de modelo o partido trampa]
+        💣 <b>TRAMPA:</b> [Un partido peligroso. Sé breve.]
         
-        📊 <b>Estrategia:</b> [Consejo de stake]
+        📊 <b>Estrategia:</b> [Una frase corta.]
         """
         
         ai_resp = self.call_gemini(prompt)
-        
-        # Si Gemini devuelve texto, lo enviamos. La función send_msg se encargará
-        # de quitar el HTML si Telegram rechaza el formato.
-        if ai_resp:
-            self.send_msg(ai_resp)
-        else:
-            self.send_msg("❌ <b>Error:</b> Respuesta vacía de IA.")
+        # Si la respuesta existe, send_msg se encargará de reintentar si el HTML falla
+        if ai_resp: self.send_msg(ai_resp)
 
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando V61 SCAN: {today}", flush=True)
+        print(f"🚀 Iniciando V62 SCAN: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -331,7 +347,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (v61)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (v62)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
