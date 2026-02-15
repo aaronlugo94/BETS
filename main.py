@@ -18,7 +18,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # He puesto tu key aquí por defecto, pero es mejor usar variables de entorno
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDLURDLILWZ7jNCc1iQOahMxmetMo0oXkM")
 
-RUN_TIME = "09:00" 
+RUN_TIME = "05:05" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
