@@ -9,32 +9,31 @@ import os
 import csv
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN EURO-SNIPER v42.0 (ULTIMATE VALUE HUNTER) ---
+# --- CONFIGURACIÓN EURO-SNIPER v43.0 (DEEP DIAGNOSTIC) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-RUN_TIME = "03:46" # Hora de ejecución diaria (UTC)
+RUN_TIME = "03:52" # Hora de ejecución diaria (UTC)
 
 # AJUSTES DE MODELO Y GESTIÓN DE CAPITAL
 SIMULATION_RUNS = 100000 
-DECAY_ALPHA = 0.88          # Memoria histórica (0.88 da peso a últimos 5-6 partidos)
-WEIGHT_GOALS = 0.65         # Peso de Goles en cálculo de fuerza
-WEIGHT_SOT = 0.35           # Peso de Tiros a Puerta (Shots on Target)
-SEASON = '2526'             # Temporada 2025/2026 (Ajustado a fecha actual)
+DECAY_ALPHA = 0.88          # Memoria histórica
+WEIGHT_GOALS = 0.65         # Peso de Goles
+WEIGHT_SOT = 0.35           # Peso de Tiros a Puerta
+SEASON = '2526'             # Temporada 2025/2026
 HISTORY_FILE = "historial_value_bets.csv"
 
-# GESTIÓN DE RIESGO (KELLY CRITERION)
-KELLY_FRACTION = 0.25       # 1/4 Kelly (Conservador)
-MAX_STAKE_PCT = 0.03        # Máximo 3% del bankroll por apuesta
-MIN_EV_THRESHOLD = 0.04     # Solo apostar si el valor esperado (EV) es > 4%
+# GESTIÓN DE RIESGO (KELLY)
+KELLY_FRACTION = 0.25       # 1/4 Kelly
+MAX_STAKE_PCT = 0.03        # Max 3% stake
+MIN_EV_THRESHOLD = 0.04     # Min 4% EV
 
-# USER AGENTS ROTATIVOS
+# USER AGENTS (Anti-Bloqueo)
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
 ]
 
-# Configuración de Ligas Soportadas
 LEAGUE_CONFIG = {
     'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1},
     'SP1': {'name': '🇪🇸 LA LIGA', 'tier': 1},
@@ -55,7 +54,7 @@ class ValueSniperBot:
         self._init_history_file()
 
     def _check_creds(self):
-        print("--- VALUE HUNTER ENGINE v42 (STABLE) STARTED ---", flush=True)
+        print("--- VALUE HUNTER ENGINE v43 (DIAGNOSTIC MODE) STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -73,7 +72,6 @@ class ValueSniperBot:
         except Exception as e: print(f"Error Telegram: {e}")
 
     # --- MOTOR MATEMÁTICO ---
-    
     def calculate_form_exponential(self, df, team, metric_col_h, metric_col_a):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0
@@ -157,11 +155,9 @@ class ValueSniperBot:
     def calculate_xg(self, home, away, data):
         s = data['stats']; avgs = data['avgs']; info = data['details']
         
-        # Modelo 1: Basado en Goles
         xg_h_goals = s.loc[home, 'Att_H_G'] * s.loc[away, 'Def_A_G'] * avgs['hg'] * info[home]['form_g']
         xg_a_goals = s.loc[away, 'Att_A_G'] * s.loc[home, 'Def_H_G'] * avgs['ag'] * info[away]['form_g']
         
-        # Modelo 2: Basado en Tiros a Puerta (Más estable)
         if data['has_sot']:
             xSOT_h = s.loc[home, 'Att_H_S'] * s.loc[away, 'Def_A_S'] * avgs['hst'] * info[home]['form_sot']
             xSOT_a = s.loc[away, 'Att_A_S'] * s.loc[home, 'Def_H_S'] * avgs['ast'] * info[away]['form_sot']
@@ -185,7 +181,6 @@ class ValueSniperBot:
         win_a = np.mean(h_sim < a_sim)
         draw = np.mean(h_sim == a_sim)
         
-        # Corrección por sesgo de empate en ligas bajas
         if (xg_h + xg_a) < 2.35:
             adj = 0.025
             draw += adj; win_h -= adj/2; win_a -= adj/2
@@ -200,7 +195,6 @@ class ValueSniperBot:
         
         if kelly_full <= 0: return 0.0
         
-        # Protección Dinámica de Drawdown
         drawdown_factor = 1.0
         if os.path.exists(HISTORY_FILE):
             try:
@@ -239,7 +233,6 @@ class ValueSniperBot:
                             
                             if real_home:
                                 rh = real_home[0]
-                                # Ventana de 48 horas para encontrar el partido
                                 mask = (
                                     (raw['Date'] >= match_date - timedelta(days=2)) & 
                                     (raw['Date'] <= match_date + timedelta(days=2)) & 
@@ -273,18 +266,19 @@ class ValueSniperBot:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
-            print("✅ Historial actualizado.", flush=True)
+            print("✅ Auditoría completada.", flush=True)
 
-    # --- EJECUCIÓN PRINCIPAL BLINDADA v42 ---
+    # --- EJECUCIÓN PRINCIPAL v43 (MOTOR DIAGNÓSTICO) ---
     def run_analysis(self):
         self.audit_results()
 
         today = datetime.now().strftime('%d/%m/%Y')
         print(f"🚀 Iniciando Value Hunter Scan: {today}", flush=True)
         
-        url_fixt = "https://www.football-data.co.uk/fixtures.csv"
+        # Anti-Caché URL
+        ts = int(time.time())
+        url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
         
-        # Headers Anti-Bloqueo
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/csv,text/plain;q=0.9,text/html;q=0.8',
@@ -293,47 +287,68 @@ class ValueSniperBot:
         }
 
         try:
-            r = requests.get(url_fixt, headers=headers, timeout=20)
+            print(f"📡 Descargando desde {url_fixt}...", flush=True)
+            r = requests.get(url_fixt, headers=headers, timeout=25)
             
             if r.status_code != 200:
                 self.send_msg(f"⚠️ Error HTTP descarga: {r.status_code}")
                 return
 
-            content = r.content.decode('latin-1')
+            content = r.content.decode('latin-1').strip()
             
-            # Verificación de HTML (Bloqueo)
-            if content.strip().startswith(('<html', '<!DOCTYPE', '<head')):
-                print(f"❌ ERROR: Web devolvió HTML en lugar de CSV.", flush=True)
-                self.send_msg("⚠️ Error: Bloqueo detectado (HTML Response).")
+            # --- DIAGNÓSTICO DE CONTENIDO (RAYOS X) ---
+            if "Div" not in content and "Date" not in content:
+                print(f"❌ CONTENIDO BASURA (Primeros 500 chars):\n{content[:500]}", flush=True)
+                if "<html" in content or "<!DOCTYPE" in content:
+                    self.send_msg("⚠️ Error: La web devolvió HTML (Bloqueo activo).")
+                else:
+                    self.send_msg("⚠️ Error: Archivo irreconocible.")
                 return
 
-            # Lectura Robusta de CSV
+            # --- LECTURA INTELIGENTE DE CABECERA ---
             try:
-                fixtures = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
-            except:
-                fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', on_bad_lines='skip')
+                # Buscar en qué línea empieza realmente la tabla
+                lines = content.split('\n')
+                header_row = 0
+                for i, line in enumerate(lines[:25]): 
+                    if line.strip().startswith('Div'):
+                        header_row = i
+                        break
+                
+                if header_row > 0:
+                    print(f"ℹ️ Cabecera encontrada en línea {header_row}. Ajustando lectura...", flush=True)
+
+                fixtures = pd.read_csv(io.StringIO(content), header=header_row, on_bad_lines='skip')
             
-            # Limpieza de nombres de columna (Evita KeyError: 'Div')
+            except Exception as e_parse:
+                print(f"⚠️ Fallo lectura estándar: {e_parse}. Reintentando modo flexible...", flush=True)
+                fixtures = pd.read_csv(io.StringIO(content), sep=None, engine='python', header=header_row, on_bad_lines='skip')
+            
+            # Limpieza final
             fixtures.columns = fixtures.columns.str.strip()
             
             if 'Div' not in fixtures.columns or 'Date' not in fixtures.columns:
-                self.send_msg(f"⚠️ Error formato: No se encuentran columnas Div/Date.")
+                print(f"❌ COLUMNAS DETECTADAS: {fixtures.columns.tolist()}", flush=True)
+                self.send_msg(f"⚠️ Error formato crítico: No se encuentran columnas Div/Date.")
                 return
 
             fixtures['Date'] = pd.to_datetime(fixtures['Date'], dayfirst=True, errors='coerce')
         
         except Exception as e:
-            self.send_msg(f"⚠️ Excepción crítica descargando: {str(e)}")
+            self.send_msg(f"⚠️ Excepción sistémica: {str(e)}")
+            print(f"DEBUG EXCEPTION: {e}", flush=True)
             return
 
         target_date = pd.to_datetime(today, dayfirst=True)
         daily = fixtures[(fixtures['Date'] >= target_date) & (fixtures['Date'] <= target_date + timedelta(days=1))]
         
         if daily.empty:
-            self.send_msg(f"💤 Sin partidos detectados para hoy ({today}).")
+            print(f"ℹ️ DB OK. Sin partidos para {today}", flush=True)
+            self.send_msg(f"💤 Sin partidos detectados para hoy/mañana.")
             return
 
         bets_found = 0
+        print(f"⚽ Analizando {len(daily)} partidos...", flush=True)
         
         for idx, row in daily.iterrows():
             if 'Div' not in row or pd.isna(row['Div']): continue
@@ -344,7 +359,6 @@ class ValueSniperBot:
             home_team = row.get('HomeTeam')
             away_team = row.get('AwayTeam')
             
-            # Extracción segura de cuotas
             try:
                 odd_h = row.get('B365H', row.get('AvgH', 0))
                 odd_d = row.get('B365D', row.get('AvgD', 0))
@@ -353,7 +367,7 @@ class ValueSniperBot:
                 odd_a = float(odd_a) if odd_a else 0.0
             except: odd_h, odd_d, odd_a = 0.0, 0.0, 0.0
 
-            if odd_h <= 1.01: continue
+            if odd_h <= 1.01 or odd_a <= 1.01: continue
 
             data = self.get_league_data(div)
             if not data: continue
@@ -413,9 +427,8 @@ class ValueSniperBot:
 
 if __name__ == "__main__":
     bot = ValueSniperBot()
-    print(f"🤖 BOT VALUE HUNTER v42. Hora target: {RUN_TIME}", flush=True)
+    print(f"🤖 BOT VALUE HUNTER v43. Hora target: {RUN_TIME}", flush=True)
     
-    # Ejecución inmediata si se define variable de entorno (para testing en deploy)
     if os.getenv("SELF_TEST", "False") == "True": 
         bot.run_analysis()
         
