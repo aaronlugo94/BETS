@@ -11,13 +11,13 @@ import json
 import re
 from datetime import datetime, timedelta
 
-# --- CONFIGURACIÓN v64.0 (GOALS CONFIDENCE ENGINE) ---
+# --- CONFIGURACIÓN v65.0 (TRANSPARENCY MODE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "01:53" 
+RUN_TIME = "02:22" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -76,7 +76,7 @@ class OmniHybridBot:
             if not GEMINI_API_KEY: print("❌ GEMINI_API_KEY NO ENCONTRADA.", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v64 PRO STARTED ---", flush=True)
+        print("--- ENGINE v65 TRANSPARENCY STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -163,9 +163,8 @@ class OmniHybridBot:
             return self.history_cache[div]
         except: return None
 
-    # --- SIMULACIÓN + RECALIBRACIÓN GOALS (CAPAS 1, 2, 3) ---
+    # --- SIMULACIÓN ---
     def calibrate_goal_prob(self, p):
-        # Capa 1: Compresión Logística (Suaviza extremos)
         return 0.5 + (p - 0.5) * 0.75
 
     def simulate_match(self, home, away, league_data, market_odds):
@@ -178,7 +177,6 @@ class OmniHybridBot:
         h_sim = np.random.poisson(att_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(att_a, SIMULATION_RUNS)
         
-        # 1X2 Híbrido
         model_h = np.mean(h_sim > a_sim)
         model_a = np.mean(h_sim < a_sim)
         model_d = np.mean(h_sim == a_sim)
@@ -192,22 +190,18 @@ class OmniHybridBot:
             raw_h = (implied_h * WEIGHT_MARKET) + (model_h * WEIGHT_MODEL)
             raw_a = (implied_a * WEIGHT_MARKET) + (model_a * WEIGHT_MODEL)
             raw_d = (implied_d * WEIGHT_MARKET) + (model_d * WEIGHT_MODEL)
-            total = raw_h + raw_a + raw_d
-            final_h, final_a, final_d = raw_h/total, raw_a/total, raw_d/total
+            
+            total_prob = raw_h + raw_a + raw_d
+            final_h, final_a, final_d = raw_h/total_prob, raw_a/total_prob, raw_d/total_prob
         else:
             final_h, final_d, final_a = model_h, model_d, model_a
 
-        # --- RECALIBRACIÓN GOLES (EL CORAZÓN DE LA v64) ---
         over25_raw = np.mean((h_sim + a_sim) > 2.5)
         over25 = self.calibrate_goal_prob(over25_raw)
         
-        # Capa 2: Penalización por Asimetría
-        xg_diff = abs(att_h - att_a)
-        xg_sum = att_h + att_a
-        if xg_sum > 2.6 and xg_diff > 1.4:
-            over25 *= 0.88 # Castigo a falsos overs
+        xg_diff = abs(att_h - att_a); xg_sum = att_h + att_a
+        if xg_sum > 2.6 and xg_diff > 1.4: over25 *= 0.88
             
-        # Capa 3: Ancla de Mercado (Goals)
         implied_over = 0.5
         if market_odds.get('O25', 0) > 1:
             implied_over = (1 / market_odds['O25']) / 1.05
@@ -215,7 +209,6 @@ class OmniHybridBot:
             
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
-        # GCS (GOALS CONFIDENCE SCORE)
         xg_score = min(1, max(0, (xg_sum - 1.8) / 1.8))
         balance = max(0, 1 - (xg_diff / xg_sum)) if xg_sum > 0 else 0
         goals_prob_score = abs(over25 - 0.5) * 2
@@ -226,15 +219,13 @@ class OmniHybridBot:
         gcs = (0.30 * xg_score + 0.20 * balance + 0.20 * goals_prob_score + 0.15 * btts_align + 0.15 * market_score) * 100
 
         return {
-            'att_str': (att_h, att_a),
-            '1x2': (final_h, final_d, final_a),
-            'goals': (over25, btts),
-            'dc': (final_h + final_d, final_a + final_d),
+            'att_str': (att_h, att_a), '1x2': (final_h, final_d, final_a),
+            'goals': (over25, btts), 'dc': (final_h + final_d, final_a + final_d),
             'dnb': (final_h/(final_h+final_a), final_a/(final_h+final_a)),
-            'ah_sim': (h_sim, a_sim),
-            'gcs': gcs
+            'ah_sim': (h_sim, a_sim), 'gcs': gcs
         }
 
+    # --- SELECCIÓN TRANSPARENTE (MUESTRA TODO) ---
     def find_best_value(self, sim, odds_row):
         candidates = []
         try:
@@ -242,37 +233,53 @@ class OmniHybridBot:
             o_o25 = float(odds_row.get('B365>2.5', 0)); o_u25 = float(odds_row.get('B365<2.5', 0))
         except: return None
 
-        def add(name, market, prob, odd, gcs=None):
-            if odd < 1.10 or prob < 0.35: return 
+        # Función que registra todo, válido o no
+        def eval_market(name, market, prob, odd, gcs=None):
+            if odd < 1.01: return
             ev = (prob * odd) - 1
-            if ev > 0.40: return 
             
-            # FILTRO GOALS ESTRICTO
+            # DETERMINAR ESTADO
+            status = "VALID"
+            reason = "OK"
+            
+            if ev < MIN_EV_THRESHOLD:
+                status = "REJECTED"; reason = f"EV Bajo ({ev*100:.1f}%)"
+            elif prob < 0.35:
+                status = "REJECTED"; reason = f"Riesgo Alto ({prob*100:.0f}%)"
+            elif ev > 0.45:
+                status = "REJECTED"; reason = "Error Modelo (EV>45%)"
+            
+            # Filtros GOALS
             if market == 'GOALS':
-                if prob > 0.62 or prob < 0.38: return # Anti-extremos
-                if gcs and gcs < 55: return # GCS bajo = Basura
-                if name == "OVER 2.5 GOLES" and gcs < 65: return
-                if name == "UNDER 2.5 GOLES" and gcs < 60: return
+                if gcs < 55: status = "REJECTED"; reason = f"GCS Pobre ({gcs:.0f})"
+                elif prob > 0.65 or prob < 0.35: status = "REJECTED"; reason = "Prob Extrema"
 
-            score = ev * (prob ** 1.5) 
-            if ev > MIN_EV_THRESHOLD:
-                candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score, 'gcs': gcs})
+            score = ev * (prob ** 1.5)
+            candidates.append({
+                'pick': name, 'market': market, 'prob': prob, 'odd': odd, 
+                'ev': ev, 'score': score, 'gcs': gcs, 'status': status, 'reason': reason
+            })
 
         if o_h > 0:
-            add("GANA HOME", "1X2", sim['1x2'][0], o_h)
-            add("GANA AWAY", "1X2", sim['1x2'][2], o_a)
-            add("DNB HOME", "DNB", sim['dnb'][0], (o_h * (1 - (1/o_d))) * 0.93)
-            add("DNB AWAY", "DNB", sim['dnb'][1], (o_a * (1 - (1/o_d))) * 0.93)
-            add("DC 1X", "Double Chance", sim['dc'][0], 1/((1/o_h)+(1/o_d))*0.92)
-            add("DC X2", "Double Chance", sim['dc'][1], 1/((1/o_a)+(1/o_d))*0.92)
-
+            eval_market("GANA HOME", "1X2", sim['1x2'][0], o_h)
+            eval_market("GANA AWAY", "1X2", sim['1x2'][2], o_a)
+            eval_market("DNB HOME", "DNB", sim['dnb'][0], (o_h * (1 - (1/o_d))) * 0.93)
+            eval_market("DNB AWAY", "DNB", sim['dnb'][1], (o_a * (1 - (1/o_d))) * 0.93)
+            
         if o_o25 > 0:
-            add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25, sim['gcs'])
-            add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], o_u25, sim['gcs'])
+            eval_market("OVER 2.5 GOLES", "GOALS", sim['goals'][0], o_o25, sim['gcs'])
+            eval_market("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], o_u25, sim['gcs'])
 
         if not candidates: return None
-        candidates.sort(key=lambda x: x['score'], reverse=True)
-        return candidates[0]
+        
+        # Primero buscamos VALID, si no hay, devolvemos el mejor REJECTED para mostrarlo
+        validos = [c for c in candidates if c['status'] == "VALID"]
+        if validos:
+            validos.sort(key=lambda x: x['score'], reverse=True)
+            return validos[0]
+        else:
+            candidates.sort(key=lambda x: x['ev'], reverse=True) # Mostrar el que tenía más EV aunque falló
+            return candidates[0]
 
     def get_kelly_stake(self, prob, odds, market):
         if odds <= 1.0: return 0.0
@@ -298,71 +305,34 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- RESUMEN FINAL PROFESIONAL ---
+    # --- RESUMEN FINAL ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está auditando la cartera...</b>")
         
         picks_text = "\n".join(self.daily_picks_buffer)
         
-        # PROMPT DEL JEFE DE ESTRATEGIA (TU VERSIÓN EXACTA)
         prompt = f"""
         Eres el JEFE DE ESTRATEGIA de un tipster cuantitativo de fútbol.
-        Tu función NO es recalcular estadísticas, sino AUDITAR, PRIORIZAR y FILTRAR las apuestas proporcionadas.
+        
+        Analiza esta lista de partidos procesados. ALGUNOS ESTÁN MARCADOS COMO "NO BET".
+        IGNORA los "NO BET" para la estrategia de inversión, pero si ves un patrón de riesgo, coméntalo.
 
-        REGLAS ESTRICTAS:
-        1. Usa ÚNICAMENTE la información contenida en el bloque de datos.
-        2. NO inventes contexto externo (lesiones, clima, motivación, historial).
-        3. NO modifiques probabilidades, cuotas, EV ni stakes.
-        4. No utilices Markdown ni emojis excesivos.
-        5. Sé crítico: puedes DESCARTAR picks si detectas incoherencias.
-        6. Trata el "Attack Strength" como indicador de presión ofensiva relativa, no como xG oficial.
-
-        DEFINICIONES OPERATIVAS:
-        - VALUE REAL: EV >= 15% y coherencia estadística.
-        - VALUE ESPECULATIVO: EV entre 5% y 15%.
-        - BAJO VALOR: EV < 5%.
-        - ALTA VARIANZA: mercados GOALS / BTTS con cuotas > 2.00.
-        - BANKER: EV medio pero varianza baja.
-        - TRAMPA: EV bajo o métricas contradictorias.
-
-        DATOS A AUDITAR (NO NARRATIVO):
+        DATOS:
         ===
         {picks_text}
         ===
 
         TAREAS:
-        1. Clasifica TODOS los picks en:
-           - LA JOYA (mejor EV ajustado a coherencia)
-           - BANKER (riesgo bajo / estabilidad)
-           - VALUE FUERTE
-           - VALUE ESPECULATIVO
-           - TRAMPA (descartar)
-        2. Detecta contradicciones internas.
-        3. Evalúa concentración de riesgo.
-        4. Propón una estrategia de cartera óptima (máx. 5–7 picks).
-        5. Advierte riesgos sistémicos si existen.
-
-        FORMATO DE RESPUESTA (HTML):
+        1. De los picks VÁLIDOS (los que no dicen NO BET), selecciona "LA JOYA" y "EL BANKER".
+        2. Si no hay picks válidos, di claramente: "Hoy el mercado no ofrece valor seguro".
+        
+        FORMATO HTML:
         🧠 <b>DICTAMEN FINAL</b>
         
-        💎 <b>LA JOYA:</b>
-        [Selección y razón técnica]
-        
-        🛡️ <b>EL BANKER:</b>
-        [Selección y razón técnica]
-        
-        ✅ <b>VALUE FUERTE (Lista):</b>
-        [Lista]
-        
-        ❌ <b>DESCARTAR (TRAMPAS):</b>
-        [Lista y razón]
-        
-        ⚠️ <b>RIESGO GLOBAL:</b>
-        [Análisis]
-        
-        📊 <b>RECOMENDACIÓN DE CARTERA:</b>
-        [Estrategia final]
+        💎 <b>LA JOYA:</b> [Selección válida]
+        🛡️ <b>EL BANKER:</b> [Selección válida]
+        📊 <b>Estrategia:</b> [Consejo]
         """
         
         ai_resp = self.call_gemini(prompt)
@@ -371,7 +341,7 @@ class OmniHybridBot:
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando PRO STRATEGY v64: {today}", flush=True)
+        print(f"🚀 Iniciando TRANSPARENCY SCAN v65: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -389,7 +359,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (GCS Engine v64)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Modo Transparente)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -406,7 +376,7 @@ class OmniHybridBot:
             try:
                 m_odds = {
                     'H': float(row.get('B365H', 0)), 'D': float(row.get('B365D', 0)), 'A': float(row.get('B365A', 0)),
-                    'O25': float(row.get('B365>2.5', 0)) # Para el ancla de goles
+                    'O25': float(row.get('B365>2.5', 0))
                 }
             except: m_odds = {'H':0, 'D':0, 'A':0, 'O25':0}
             
@@ -414,10 +384,21 @@ class OmniHybridBot:
             best_bet = self.find_best_value(sim, row)
             
             if best_bet:
-                bets_found += 1
-                stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
-                stake_viz = "🟩" * int(stake * 100 * 2) + "⬜" * (5 - int(stake * 100 * 2))
+                # LÓGICA DE VISUALIZACIÓN
+                is_valid = best_bet['status'] == "VALID"
                 
+                if is_valid:
+                    bets_found += 1
+                    icon = "🎯"
+                    stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
+                    stake_txt = f"{stake*100:.2f}%"
+                    status_line = f"✅ <b>PICK ACTIVO</b>"
+                else:
+                    icon = "⛔"
+                    stake = 0.0
+                    stake_txt = "0.00% (Skipped)"
+                    status_line = f"⚠️ <b>NO BET:</b> {best_bet['reason']}"
+
                 form_h = self.get_team_form_icon(data['raw_df'], rh)
                 form_a = self.get_team_form_icon(data['raw_df'], ra)
                 
@@ -425,29 +406,26 @@ class OmniHybridBot:
                 dc1x, dcx2 = sim['dc']
                 btts = sim['goals'][1]
                 ov25 = sim['goals'][0]
-                
                 h_sim, a_sim = sim['ah_sim']
                 ah_h_15 = np.mean((h_sim - 1.5) > a_sim)
                 ah_a_15 = np.mean((a_sim - 1.5) > h_sim)
-                
                 fair_odd_us = self.dec_to_am(1/best_bet['prob'])
                 
-                # INCLUIMOS EL GCS EN EL REPORTE SI ES DE GOLES
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"💎 <b>VALUE DETECTADO</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS DE MERCADO</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
-                    f"🎯 PICK: <b>{best_bet['pick']}</b> ({best_bet['market']}){gcs_info}\n"
+                    f"{status_line}\n"
+                    f"{icon} PICK: <b>{best_bet['pick']}</b> ({best_bet['market']}){gcs_info}\n"
                     f"⚖️ Cuota: <b>{self.dec_to_am(best_bet['odd'])}</b> ({best_bet['odd']:.2f})\n"
                     f"🧠 Prob: <b>{best_bet['prob']*100:.1f}%</b> (Fair: {fair_odd_us})\n"
                     f"📈 EV: <b>+{best_bet['ev']*100:.1f}%</b>\n"
-                    f"🏦 Stake: {stake_viz} ({stake*100:.2f}%)\n"
+                    f"🏦 Stake: {stake_txt}\n"
                     f"───────────────\n"
-                    f"📊 <b>ANALÍTICA (X-RAY):</b>\n"
+                    f"📊 <b>X-RAY DATA:</b>\n"
                     f"• 1X2: {ph*100:.0f}% | {pd_raw*100:.0f}% | {pa*100:.0f}%\n"
-                    f"• D.Oport: 1X {dc1x*100:.0f}% | X2 {dcx2*100:.0f}%\n"
                     f"• BTTS: Sí {btts*100:.0f}% | No {(1-btts)*100:.0f}%\n"
                     f"• Goals 2.5: Ov {ov25*100:.0f}% | Un {(1-ov25)*100:.0f}%\n"
                     f"• AH -1.5: H {ah_h_15*100:.0f}% | A {ah_a_15*100:.0f}%\n"
@@ -456,19 +434,18 @@ class OmniHybridBot:
                 )
                 self.send_msg(msg)
                 
-                # Datos para Gemini (incluye GCS)
-                gcs_log = f"GCS:{sim['gcs']:.0f}" if best_bet['market']=='GOALS' else "N/A"
-                self.daily_picks_buffer.append(
-                    f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}% | Stake: {stake*100:.1f}% | AttStr: {sim['att_str'][0]:.2f}-{sim['att_str'][1]:.2f} | {gcs_log})"
-                )
+                # Solo guardamos los VALIDOS para el resumen final de Gemini
+                if is_valid:
+                    self.daily_picks_buffer.append(
+                        f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)"
+                    )
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
-                    csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], "PENDING", 0])
+                    csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], 0])
 
-        if bets_found > 0:
-            self.generate_final_summary()
-        else:
-            self.send_msg("🧹 Barrido completado: Sin oportunidades claras hoy.")
+        # Siempre llamamos a Gemini, aunque sea para decir que no hay nada
+        self.generate_final_summary()
+        self.send_msg("🏁 <b>Reporte Finalizado.</b>")
 
 if __name__ == "__main__":
     bot = OmniHybridBot()
