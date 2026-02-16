@@ -13,20 +13,20 @@ import math
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v71.1 (PARLAY ARCHITECT FIXED) ---
+# --- CONFIGURACIÓN v72.0 (SWEET SPOT & NARRATIVE AI) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "03:52" 
+RUN_TIME = "04:05" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
 MIN_EV_THRESHOLD = 0.02
-SEASON = '2526'  # <--- RESTAURADO
-HISTORY_FILE = "historial_omni_hybrid.csv" # <--- RESTAURADO
+SEASON = '2526'
+HISTORY_FILE = "historial_omni_hybrid.csv"
 
 # GESTIÓN DE RIESGO
 KELLY_FRACTION = 0.20       
@@ -71,7 +71,7 @@ class OmniHybridBot:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v71.1 STARTED ---", flush=True)
+        print("--- ENGINE v72.0 SWEET SPOT STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -265,7 +265,6 @@ class OmniHybridBot:
             return sum(vals)/len(vals) if vals else 0.0
         
         btts_yes = get_avg(['BbAvBBTS', 'B365BTTSY'])
-        
         return {
             'H': get_avg(['B365H', 'PSH', 'WHH']),
             'D': get_avg(['B365D', 'PSD', 'WHD']),
@@ -274,22 +273,36 @@ class OmniHybridBot:
             'BTTS_Y': btts_yes
         }
 
-    # --- SELECCIÓN ---
+    # --- SELECCIÓN DEL "SWEET SPOT" ---
     def find_best_value(self, sim, odds):
         candidates = []
         def add(name, market, prob, odd, gcs=None):
             if odd < 1.05: return
             ev = (prob * odd) - 1
             status = "VALID"; reason = "OK"
+            
+            # Filtros básicos
             if ev < MIN_EV_THRESHOLD: status="REJECTED"; reason=f"EV Bajo ({ev*100:.1f}%)"
             elif prob < 0.35: status="REJECTED"; reason=f"Riesgo ({prob*100:.0f}%)"
             elif ev > 0.45: status="REJECTED"; reason="Error Modelo"
             if market == 'GOALS':
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
-            score = ev * (prob ** 1.5)
-            candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score, 'status': status, 'reason': reason})
+            
+            # --- ALGORITMO SWEET SPOT (Nuevo) ---
+            # El Score ya no es solo EV. Premia el rango de cuota 1.70 - 2.40
+            base_score = ev * (prob ** 1.5)
+            
+            # Penalización por cuota muy baja (Aburrida)
+            if odd < 1.40: base_score *= 0.5 
+            # Penalización por cuota baja (Segura pero poco jugo)
+            elif odd < 1.60: base_score *= 0.8
+            # Bonus por "Sweet Spot" (Jugo ideal)
+            elif 1.70 <= odd <= 2.40: base_score *= 1.2
+            
+            candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': base_score, 'status': status, 'reason': reason})
 
+        # 1. Mercados Principales
         if odds['H'] > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], odds['H'])
             add("GANA AWAY", "1X2", sim['1x2'][2], odds['A'])
@@ -298,17 +311,18 @@ class OmniHybridBot:
             add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94)
             add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94)
 
+        # 2. Goles y BTTS
         if odds['O25'] > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], odds['O25'], sim['gcs'])
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], 1 / (1 - (1/odds['O25'] * 1.05)), sim['gcs'])
-
         if odds['BTTS_Y'] > 0:
             add("BTTS SÍ", "BTTS", sim['goals'][1], odds['BTTS_Y'])
             add("BTTS NO", "BTTS", 1-sim['goals'][1], 1 / (1 - (1/odds['BTTS_Y']*1.05)))
         
+        # 3. Handicaps (Solo si son MUY claros, pero penalizados en score para que no dominen)
         ah_h_plus = sim['ah'][2]; ah_a_plus = sim['ah'][3]
-        if ah_h_plus > 0.88: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
-        if ah_a_plus > 0.88: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
+        if ah_h_plus > 0.92: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
+        if ah_a_plus > 0.92: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
 
         if not candidates: return None
         validos = [c for c in candidates if c['status'] == "VALID"]
@@ -343,42 +357,54 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- RESUMEN FINAL ---
+    # --- GEMINI: NARRATIVA Y ESTRATEGIA ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        Eres el JEFE DE ESTRATEGIA de un fondo de inversión deportiva.
+        Eres el JEFE DE ESTRATEGIA de un fondo de inversión deportiva (Quant Fund).
         
-        DATOS (Picks procesados hoy):
+        DATOS TÉCNICOS (Picks procesados hoy):
         ===
         {picks_text}
         ===
 
-        TAREAS:
-        1. Audita los picks y elimina los "NO BET" de tu análisis.
-        2. Elige "LA JOYA" (Máximo Valor) y "EL BANKER" (Máxima Seguridad).
-        3. 🎲 CONSTRUYE 2 PARLAYS (COMBINADAS):
-           - PARLAY SEGURO: Combina 2 o 3 picks muy sólidos (Bankers/Handicaps) para buscar cuota total ~2.00.
-           - PARLAY DE VALOR: Combina 2 picks de alto EV (Joyas) para buscar un golpe de suerte (Cuota ~4.00+).
+        TU MISIÓN (Análisis Avanzado):
         
-        FORMATO HTML (Limpio):
-        🧠 <b>DICTAMEN FINAL</b>
+        1. 🔮 SIMULACIÓN NARRATIVA (Game Script):
+           - Elige el partido más interesante (La Joya).
+           - Basado en AttStr/DefStr, describe el "Guion del Partido". ¿Quién domina? ¿Gol temprano? 
+           - Escribe un mini-guion de cómo se desarrollará el caos.
+        
+        2. 🧪 ANÁLISIS DE CORRELACIÓN (Anti-Parlay):
+           - Revisa si hay "Correlación Tóxica" entre los picks. (Ej: Dos Unders en ligas goleadoras).
+           - Calcula un 'Índice de Diversificación' (0-10).
+
+        3. 🎲 CONSTRUYE 2 PARLAYS:
+           - PARLAY SEGURO (x2.00 aprox): Combina Bankers sólidos.
+           - PARLAY DE VALOR (x3.50+): Combina Joyas de alto EV.
+
+        FORMATO DE SALIDA (HTML Limpio):
+        🧠 <b>DICTAMEN FINAL v72</b>
         
         💎 <b>LA JOYA:</b> [Pick]
         🛡️ <b>EL BANKER:</b> [Pick]
+
+        🔮 <b>SIMULACIÓN DEL PARTIDO (La Joya):</b>
+        [Tu guion narrativo aquí...]
+
+        🧪 <b>CORRELACIÓN Y TOXICIDAD:</b>
+        [Análisis breve]
         
         🎲 <b>PARLAY SEGURO (x2.xx):</b>
-        1. [Pick 1]
-        2. [Pick 2]
+        1. [Pick]
+        2. [Pick]
         
         🚀 <b>PARLAY DE VALOR (x?.??):</b>
-        1. [Pick 1]
-        2. [Pick 2]
-        
-        📊 <b>CONSEJO:</b> [Breve]
+        1. [Pick]
+        2. [Pick]
         """
         ai_resp = self.call_gemini(prompt)
         if ai_resp: self.send_msg(ai_resp)
@@ -386,7 +412,7 @@ class OmniHybridBot:
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v71.1 PARLAY ARCHITECT: {today}", flush=True)
+        print(f"🚀 Iniciando v72.0 SWEET SPOT: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -404,7 +430,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Parlay Generator v71.1)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Sweet Spot Edition)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -449,7 +475,7 @@ class OmniHybridBot:
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v71.1</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v72</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
