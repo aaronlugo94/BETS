@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v79.0 (GHOST PICKS & HTML FIX) ---
+# --- CONFIGURACIÓN v80.0 (FINAL POLISH & TEXT SANITIZER) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:55" 
+RUN_TIME = "05:02" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -67,8 +67,8 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = [] 
         
-        print("--- ENGINE v79.0 GHOST PICKS STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v79.0</b>\nEstado SDK: {SDK_STATUS}")
+        print("--- ENGINE v80.0 FINAL POLISH STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v80.0</b>\nEstado SDK: {SDK_STATUS}")
         
         self._init_history_file()
         
@@ -87,29 +87,32 @@ class OmniHybridBot:
                 writer = csv.writer(f)
                 writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Status', 'Stake', 'Profit', 'FTHG', 'FTAG'])
 
-    # --- TELEGRAM CLEANER (FIX HTML CRASH) ---
-    def clean_text(self, text):
-        # 1. Eliminar bloques de código de Gemini
+    # --- TELEGRAM SANITIZER (ELIMINA HTML BASURA) ---
+    def sanitize_text(self, text):
+        # 1. Eliminar bloques de código markdown
         text = text.replace("```html", "").replace("```", "")
         
-        # 2. Eliminar etiquetas de documento completo que rompen Telegram
-        text = re.sub(r'<!DOCTYPE.*?>', '', text, flags=re.IGNORECASE)
+        # 2. Eliminar tags estructurales de web (Gemini a veces los manda)
+        text = re.sub(r'<!DOCTYPE.*?>', '', text, flags=re.IGNORECASE|re.DOTALL)
         text = re.sub(r'<html.*?>', '', text, flags=re.IGNORECASE)
         text = re.sub(r'</html>', '', text, flags=re.IGNORECASE)
         text = re.sub(r'<head>.*?</head>', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<body.*?>', '', text, flags=re.IGNORECASE)
         text = re.sub(r'</body>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<title>.*?</title>', '', text, flags=re.IGNORECASE)
         
-        # 3. Eliminar Markdown conflictivo
-        text = text.replace('**', '').replace('__', '')
+        # 3. Convertir Negritas de Markdown a HTML soportado por Telegram
+        # **texto** -> <b>texto</b>
+        text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text)
         
         return text.strip()
 
     def send_msg(self, text, retry_count=0, use_html=True):
         if not TELEGRAM_TOKEN: return
         
-        # Pre-limpieza para evitar errores 400
-        if use_html: text = self.clean_text(text)
+        # Paso 1: Limpieza profunda
+        if use_html: 
+            text = self.sanitize_text(text)
             
         if len(text) > 4000:
             chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -117,16 +120,21 @@ class OmniHybridBot:
             return
 
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML" if use_html else None}
+        # Si use_html es False, mandamos parse_mode=None explícitamente
+        p_mode = "HTML" if use_html else None
+        
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": p_mode}
         
         try:
             r = requests.post(url, json=payload, timeout=20)
-            if r.status_code == 200: return
             
-            # Si falla, intentamos enviar como texto plano (SIN HTML)
+            if r.status_code == 200: 
+                return
+            
+            # Si falla el HTML, reintentamos PLANO (Sin formato)
             if r.status_code == 400 and use_html:
-                print(f"⚠️ Error formato HTML Telegram. Reenviando plano.", flush=True)
-                # Quitamos todos los tags <...> para el modo texto plano
+                print(f"⚠️ Telegram rechazó HTML. Reenviando texto plano.", flush=True)
+                # Quitamos TODOS los tags para el modo plano
                 clean_plain = re.sub(r'<[^>]+>', '', text)
                 self.send_msg(clean_plain, retry_count, use_html=False)
                 return
@@ -138,6 +146,7 @@ class OmniHybridBot:
                 return
                 
             print(f"❌ Error Telegram {r.status_code}: {r.text}", flush=True)
+            
         except Exception as e: print(f"Error Telegram Exc: {e}", flush=True)
         time.sleep(1)
 
@@ -365,12 +374,13 @@ class OmniHybridBot:
 
         if not candidates: return None, best_handi
         
+        # 1. Buscamos el mejor VALID (Pick Activo)
         principales = [c for c in candidates if c['status'] == "VALID"]
         if principales:
             principales.sort(key=lambda x: x['score'], reverse=True)
             return principales[0], best_handi
         
-        # SI NO HAY VALID, devolvemos el mejor REJECTED (Ghost Pick)
+        # 2. Si no hay VALID, devolvemos el mejor REJECTED para mostrar "Ghost Pick" (NO BET pero con info)
         candidates.sort(key=lambda x: x['ev'], reverse=True)
         return candidates[0], best_handi
 
@@ -449,13 +459,13 @@ class OmniHybridBot:
             writer = csv.writer(f); writer.writerows(rows)
         if audit_buffer:
             audit_text = "\n".join(audit_buffer)
-            prompt = f"Analiza brevemente estos resultados:\n{audit_text}"
+            prompt = f"Analiza estos resultados: {audit_text}"
             try:
                 ai_resp = self.call_gemini(prompt)
                 self.send_msg(f"🔬 <b>AUDITORÍA:</b>\n{ai_resp}")
             except Exception as e: self.send_msg(f"Error Audit: {e}")
 
-    # --- MAIN STRATEGY (HTML SAFE) ---
+    # --- MAIN STRATEGY (TEXT CLEANER) ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer and not self.handicap_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
@@ -472,13 +482,13 @@ class OmniHybridBot:
         PICKS SEGUROS (Handicaps, usar solo para Parlay):
         {handi_text}
 
-        Genera un reporte en HTML SIMPLE (solo negritas <b> y saltos de linea, NADA de <!DOCTYPE> ni <html>):
-        1. 💎 <b>LA JOYA:</b> (El mejor pick de los oficiales > 1.70).
-        2. 🛡️ <b>EL BANKER:</b> (El pick oficial más seguro).
-        3. 🎲 <b>PARLAY SEGURO:</b> (Combina 2 handicaps o bankers).
-        4. 🚀 <b>PARLAY DE VALOR:</b> (Combina 2 joyas).
+        Genera un reporte breve con:
+        1. 💎 LA JOYA: (El mejor pick oficial).
+        2. 🛡️ EL BANKER: (El pick más seguro).
+        3. 🎲 PARLAY SEGURO: (2 picks seguros).
+        4. 🚀 PARLAY DE VALOR: (2 joyas).
         
-        Responde DIRECTAMENTE con el contenido, sin introducciones.
+        USA SOLO negritas <b> y saltos de linea. NO uses Markdown (**).
         """
         
         try:
@@ -494,7 +504,7 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v79.0 GHOST: {today}", flush=True)
+        print(f"🚀 Iniciando v80.0 GHOST + CLEANER: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -532,22 +542,18 @@ class OmniHybridBot:
             if best_bet:
                 is_valid = best_bet['status'] == "VALID"
                 
-                # --- LÓGICA GHOST PICKS ---
-                # Si es VALID: Verde y Stake
-                # Si es REJECTED: Warning y Stake Skipped (PERO SE MUESTRA EL PICK)
-                
                 if is_valid:
                     bets_found += 1
                     icon = "🎯"; status_line = "✅ <b>PICK ACTIVO</b>"
                     stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
                     stake_txt = f"{stake*100:.2f}%"
-                    # Guardamos VALID para Gemini
                     tag = "[VALID]"
                     self.daily_picks_buffer.append(f"{tag} {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 else:
-                    icon = "⚠️"; status_line = f"🚫 <b>NO BET</b> ({best_bet['reason']})"
+                    icon = "🚫"; status_line = f"🚫 <b>NO BET</b> ({best_bet['reason']})"
                     stake = 0.0; stake_txt = "Skipped"
-                    # No guardamos REJECTED para Gemini (para que no se confunda), solo handicaps
+                    # GHOST LOGIC: Mostramos el pick pero decimos que es peligroso
+                    icon_pick = "⚠️"
 
                 if best_handi:
                     self.handicap_buffer.append(f"{rh} vs {ra}: {best_handi['pick']} @ {best_handi['odd']:.2f}")
@@ -559,12 +565,14 @@ class OmniHybridBot:
                 h_stats, a_stats = sim['stats']; lambdas = sim['lambdas']; cs_str, cs_prob = sim['cs']
                 fair_odd_us = self.dec_to_am(1/best_bet['prob']) if best_bet['prob'] > 0 else "-"
                 
+                pick_icon_display = "🎯" if is_valid else "⚠️"
+                
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v79</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v80</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
-                    f"{icon} PICK: <b>{best_bet['pick']}</b> ({best_bet['market']})\n"
+                    f"{pick_icon_display} PICK: <b>{best_bet['pick']}</b> ({best_bet['market']})\n"
                     f"⚖️ Cuota Avg: <b>{self.dec_to_am(best_bet['odd'])}</b> ({best_bet['odd']:.2f})\n"
                     f"🧠 Prob: <b>{best_bet['prob']*100:.1f}%</b> (Fair: {fair_odd_us})\n"
                     f"📈 EV: <b>+{best_bet['ev']*100:.1f}%</b>\n"
