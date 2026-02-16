@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v78.0 (FORMAT FIX & HANDICAP BAN) ---
+# --- CONFIGURACIÓN v79.0 (GHOST PICKS & HTML FIX) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:48" 
+RUN_TIME = "04:55" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -65,10 +65,10 @@ class OmniHybridBot:
         self.fixtures = None
         self.history_cache = {} 
         self.daily_picks_buffer = [] 
-        self.handicap_buffer = [] # Buffer oculto para handicaps
+        self.handicap_buffer = [] 
         
-        print("--- ENGINE v78.0 STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v78.0</b>\nEstado SDK: {SDK_STATUS}")
+        print("--- ENGINE v79.0 GHOST PICKS STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v79.0</b>\nEstado SDK: {SDK_STATUS}")
         
         self._init_history_file()
         
@@ -87,19 +87,29 @@ class OmniHybridBot:
                 writer = csv.writer(f)
                 writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Status', 'Stake', 'Profit', 'FTHG', 'FTAG'])
 
-    # --- TELEGRAM ROBUSTO (FIX FORMATO) ---
+    # --- TELEGRAM CLEANER (FIX HTML CRASH) ---
     def clean_text(self, text):
-        # Elimina Markdown que rompe HTML
-        text = text.replace('**', '').replace('__', '').replace('`', '')
-        # Elimina tags HTML rotos o no soportados si es necesario, pero mantenemos negritas simples
-        return text
+        # 1. Eliminar bloques de código de Gemini
+        text = text.replace("```html", "").replace("```", "")
+        
+        # 2. Eliminar etiquetas de documento completo que rompen Telegram
+        text = re.sub(r'<!DOCTYPE.*?>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<html.*?>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</html>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<head>.*?</head>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<body.*?>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'</body>', '', text, flags=re.IGNORECASE)
+        
+        # 3. Eliminar Markdown conflictivo
+        text = text.replace('**', '').replace('__', '')
+        
+        return text.strip()
 
     def send_msg(self, text, retry_count=0, use_html=True):
         if not TELEGRAM_TOKEN: return
         
-        # Limpieza preventiva para Gemini
-        if "DICTAMEN FINAL" in text:
-            text = text.replace("**", "") # Quitar markdown de Gemini
+        # Pre-limpieza para evitar errores 400
+        if use_html: text = self.clean_text(text)
             
         if len(text) > 4000:
             chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
@@ -111,21 +121,23 @@ class OmniHybridBot:
         
         try:
             r = requests.post(url, json=payload, timeout=20)
-            if r.status_code == 200:
+            if r.status_code == 200: return
+            
+            # Si falla, intentamos enviar como texto plano (SIN HTML)
+            if r.status_code == 400 and use_html:
+                print(f"⚠️ Error formato HTML Telegram. Reenviando plano.", flush=True)
+                # Quitamos todos los tags <...> para el modo texto plano
+                clean_plain = re.sub(r'<[^>]+>', '', text)
+                self.send_msg(clean_plain, retry_count, use_html=False)
                 return
-            elif r.status_code == 400 and use_html:
-                # Si falla por formato HTML, reintentamos como TEXTO PLANO LIMPIO
-                print(f"⚠️ Error formato Telegram. Reenviando plano. ({r.text})", flush=True)
-                clean_t = self.clean_text(text)
-                self.send_msg(clean_t, retry_count, use_html=False)
-                return
-            elif r.status_code == 429:
+            
+            if r.status_code == 429:
                 retry = int(r.json().get('parameters', {}).get('retry_after', 30))
                 time.sleep(retry + 2)
                 if retry_count < 2: self.send_msg(text, retry_count + 1, use_html)
                 return
-            else:
-                print(f"❌ Error Telegram {r.status_code}: {r.text}", flush=True)
+                
+            print(f"❌ Error Telegram {r.status_code}: {r.text}", flush=True)
         except Exception as e: print(f"Error Telegram Exc: {e}", flush=True)
         time.sleep(1)
 
@@ -137,7 +149,6 @@ class OmniHybridBot:
     # --- GEMINI ---
     def test_gemini_connection(self):
         try:
-            # self.send_msg("🧪 Testeando cerebro IA...") 
             response = self.call_gemini("Responde 'OK' si me lees.")
             if "OK" in response: print("Gemini OK")
             else: self.send_msg(f"⚠️ Gemini respondió raro: {response}")
@@ -156,22 +167,18 @@ class OmniHybridBot:
                 ],
                 temperature=0.7
             )
-            
             r = self.ai_client.models.generate_content(
                 model="gemini-2.0-flash", 
                 contents=prompt,
                 config=config
             )
             return r.text if r.text else "⚠️ Respuesta vacía de IA."
-            
-        except Exception as e: 
-            return f"⚠️ EXCEPCIÓN IA: {str(e)[:200]}"
+        except Exception as e: return f"⚠️ EXCEPCIÓN IA: {str(e)[:200]}"
 
     # --- CÁLCULO ---
     def calculate_team_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
-        
         w_att = 0; w_def = 0; total_w = 0
         for i, (_, row) in enumerate(matches.iterrows()):
             weight = pow(DECAY_ALPHA, 5 - i); total_w += weight
@@ -182,7 +189,6 @@ class OmniHybridBot:
                 att = (row['FTAG'] * 0.6) + ((row.get('AST', row['FTAG']*3)/3) * 0.4)
                 def_weak = (row['FTHG'] * 0.6) + ((row.get('HST', row['FTHG']*3)/3) * 0.4)
             w_att += att * weight; w_def += def_weak * weight
-            
         return w_att / total_w, w_def / total_w
 
     def get_league_data(self, div):
@@ -193,12 +199,9 @@ class OmniHybridBot:
             try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
             except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
             df = df.dropna(subset=['HomeTeam', 'AwayTeam'])
-            
             matches_played = df.dropna(subset=['FTHG', 'FTAG'])
-            if len(matches_played) > 0:
-                avg_g = matches_played.FTHG.mean() + matches_played.FTAG.mean()
+            if len(matches_played) > 0: avg_g = matches_played.FTHG.mean() + matches_played.FTAG.mean()
             else: avg_g = 2.5
-            
             teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
             team_stats = {}
             avg_att = 0; avg_def = 0; cnt = 0
@@ -208,7 +211,6 @@ class OmniHybridBot:
                 avg_att += a; avg_def += d; cnt += 1
             if cnt > 0: avg_att /= cnt; avg_def /= cnt
             else: avg_att = 1; avg_def = 1
-            
             norm_stats = {t: {'att': s['att']/avg_att, 'def': s['def']/avg_def} for t, s in team_stats.items()}
             league_weight = LEAGUE_CONFIG.get(div, {}).get('weight', 0.70)
             self.history_cache[div] = {'stats': norm_stats, 'teams': teams, 'raw_df': df, 'avg_g': avg_g, 'market_weight': league_weight}
@@ -245,13 +247,10 @@ class OmniHybridBot:
         avg_g = league_data['avg_g'] / 2
         m_weight = league_data.get('market_weight', 0.70)
         model_weight = 1.0 - m_weight
-        
         h_st = stats.get(home, {'att':1.0, 'def':1.0})
         a_st = stats.get(away, {'att':1.0, 'def':1.0})
-        
         lambda_h = min(3.5, h_st['att'] * a_st['def'] * avg_g * 1.20)
         lambda_a = min(3.5, a_st['att'] * h_st['def'] * avg_g)
-        
         model_h, model_d, model_a = self.calculate_dixon_coles_1x2(lambda_h, lambda_a)
         
         h_sim = np.random.poisson(lambda_h, SIMULATION_RUNS)
@@ -262,11 +261,9 @@ class OmniHybridBot:
             implied_h = (1 / market_odds['H']) / margin
             implied_a = (1 / market_odds['A']) / margin
             implied_d = (1 / market_odds['D']) / margin
-            
             raw_h = (implied_h * m_weight) + (model_h * model_weight)
             raw_a = (implied_a * m_weight) + (model_a * model_weight)
             raw_d = (implied_d * m_weight) + (model_d * model_weight)
-            
             total = raw_h + raw_a + raw_d
             final_h, final_a, final_d = raw_h/total, raw_a/total, raw_d/total
         else:
@@ -274,15 +271,11 @@ class OmniHybridBot:
 
         over25_raw = np.mean((h_sim + a_sim) > 2.5)
         over25 = self.calibrate_goal_prob(over25_raw)
-        
-        if (lambda_h + lambda_a) > 2.6 and abs(lambda_h - lambda_a) > 1.4: 
-            over25 *= 0.88 
-            
+        if (lambda_h + lambda_a) > 2.6 and abs(lambda_h - lambda_a) > 1.4: over25 *= 0.88 
         implied_over = 0.5
         if market_odds.get('O25', 0) > 1:
             implied_over = (1 / market_odds['O25']) / 1.05
             over25 = (over25 * 0.70) + (implied_over * 0.30)
-            
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
         xg_sum = lambda_h + lambda_a
@@ -295,11 +288,9 @@ class OmniHybridBot:
         most_common, count = Counter(sim_scores).most_common(1)[0]
         cs_str = f"{most_common[0]}-{most_common[1]}"
         cs_prob = (count / SIMULATION_RUNS) * 100
-
-        ah_h_minus = np.mean((h_sim - 1.5) > a_sim)
-        ah_a_minus = np.mean((a_sim - 1.5) > h_sim)
-        ah_h_plus = np.mean((h_sim + 1.5) > a_sim)
-        ah_a_plus = np.mean((a_sim + 1.5) > h_sim)
+        
+        ah_h_minus = np.mean((h_sim - 1.5) > a_sim); ah_a_minus = np.mean((a_sim - 1.5) > h_sim)
+        ah_h_plus = np.mean((h_sim + 1.5) > a_sim); ah_a_plus = np.mean((a_sim + 1.5) > h_sim)
 
         return {
             'lambdas': (lambda_h, lambda_a), 'stats': (h_st, a_st),
@@ -315,17 +306,14 @@ class OmniHybridBot:
             vals = [float(row[c]) for c in cols if row.get(c) and str(row[c]).replace('.','').isdigit()]
             return sum(vals)/len(vals) if vals else 0.0
         return {
-            'H': get_avg(['B365H', 'PSH', 'WHH']),
-            'D': get_avg(['B365D', 'PSD', 'WHD']),
-            'A': get_avg(['B365A', 'PSA', 'WHA']),
-            'O25': get_avg(['B365>2.5', 'P>2.5', 'WH>2.5']),
+            'H': get_avg(['B365H', 'PSH', 'WHH']), 'D': get_avg(['B365D', 'PSD', 'WHD']),
+            'A': get_avg(['B365A', 'PSA', 'WHA']), 'O25': get_avg(['B365>2.5', 'P>2.5', 'WH>2.5']),
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- SELECCIÓN AGRESIVA (SIN HANDICAP EN MAIN) ---
     def find_best_value(self, sim, odds):
         candidates = []
-        handicap_candidates = [] # Lista separada para Gemini
+        handicap_candidates = []
         
         def add(name, market, prob, odd, gcs=None):
             if odd < 1.05: return
@@ -339,18 +327,18 @@ class OmniHybridBot:
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
             
+            if market == "HANDI" and odd < 1.60:
+                status = "BACKUP"
+                reason = "Cuota Baja (Backup)"
+            
             base_score = ev * (prob ** 1.5)
             if 1.70 <= odd <= 2.50: base_score *= 1.3 
             
             item = {'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': base_score, 'status': status, 'reason': reason}
             
-            # SEPARACIÓN TOTAL: Si es Handi, va a la lista oculta
-            if market == "HANDI":
-                handicap_candidates.append(item)
-            else:
-                candidates.append(item)
+            if market == "HANDI": handicap_candidates.append(item)
+            else: candidates.append(item)
 
-        # 1. Mercados Principales
         if odds['H'] > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], odds['H'])
             add("GANA AWAY", "1X2", sim['1x2'][2], odds['A'])
@@ -359,7 +347,6 @@ class OmniHybridBot:
             add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94)
             add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94)
 
-        # 2. Goles y BTTS
         if odds['O25'] > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], odds['O25'], sim['gcs'])
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], 1 / (1 - (1/odds['O25'] * 1.05)), sim['gcs'])
@@ -367,12 +354,10 @@ class OmniHybridBot:
             add("BTTS SÍ", "BTTS", sim['goals'][1], odds['BTTS_Y'])
             add("BTTS NO", "BTTS", 1-sim['goals'][1], 1 / (1 - (1/odds['BTTS_Y']*1.05)))
         
-        # 3. Handicaps (Solo lista oculta)
         ah_h_plus = sim['ah'][2]; ah_a_plus = sim['ah'][3]
         if ah_h_plus > 0.90: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
         if ah_a_plus > 0.90: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
 
-        # Retornamos handicap oculto aparte
         best_handi = None
         if handicap_candidates:
             handicap_candidates.sort(key=lambda x: x['ev'], reverse=True)
@@ -385,6 +370,7 @@ class OmniHybridBot:
             principales.sort(key=lambda x: x['score'], reverse=True)
             return principales[0], best_handi
         
+        # SI NO HAY VALID, devolvemos el mejor REJECTED (Ghost Pick)
         candidates.sort(key=lambda x: x['ev'], reverse=True)
         return candidates[0], best_handi
 
@@ -438,7 +424,6 @@ class OmniHybridBot:
         if not os.path.exists(HISTORY_FILE): return
         league_data_map = {}
         for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
-
         rows = []; audit_buffer = []
         with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
             reader = csv.reader(f); header = next(reader); rows.append(header)
@@ -460,19 +445,17 @@ class OmniHybridBot:
                                 else: row[11] = 0.0
                                 audit_buffer.append(f"Pick: {pick} | Result: {res} | Profit: {row[11]}")
                 rows.append(row)
-
         with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f); writer.writerows(rows)
-
         if audit_buffer:
             audit_text = "\n".join(audit_buffer)
-            prompt = f"Analiza estos resultados de apuestas brevemente:\n{audit_text}"
+            prompt = f"Analiza brevemente estos resultados:\n{audit_text}"
             try:
                 ai_resp = self.call_gemini(prompt)
                 self.send_msg(f"🔬 <b>AUDITORÍA:</b>\n{ai_resp}")
             except Exception as e: self.send_msg(f"Error Audit: {e}")
 
-    # --- MAIN STRATEGY (ROBUST) ---
+    # --- MAIN STRATEGY (HTML SAFE) ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer and not self.handicap_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
@@ -481,27 +464,27 @@ class OmniHybridBot:
         handi_text = "\n".join(self.handicap_buffer)
         
         prompt = f"""
-        Actúa como un Jefe de Estrategia de Inversión Deportiva.
+        Actúa como Jefe de Estrategia de Apuestas.
         
-        PICKS PRINCIPALES (Oficiales):
+        PICKS OFICIALES (Validados):
         {picks_text}
         
-        PICKS DE RESPALDO (Seguros pero cuota baja, ÚSALOS PARA EL PARLAY SEGURO):
+        PICKS SEGUROS (Handicaps, usar solo para Parlay):
         {handi_text}
 
-        Genera un reporte HTML limpio con:
-        1. "LA JOYA": El pick principal con mejor valor.
-        2. "EL BANKER": El pick principal más seguro.
-        3. "PARLAY SEGURO": Usa los picks de respaldo (Handicaps) combinados con un Banker.
-        4. "PARLAY DE VALOR": Combina las Joyas.
+        Genera un reporte en HTML SIMPLE (solo negritas <b> y saltos de linea, NADA de <!DOCTYPE> ni <html>):
+        1. 💎 <b>LA JOYA:</b> (El mejor pick de los oficiales > 1.70).
+        2. 🛡️ <b>EL BANKER:</b> (El pick oficial más seguro).
+        3. 🎲 <b>PARLAY SEGURO:</b> (Combina 2 handicaps o bankers).
+        4. 🚀 <b>PARLAY DE VALOR:</b> (Combina 2 joyas).
         
-        NO uses Markdown (**), usa solo tags HTML como <b>.
+        Responde DIRECTAMENTE con el contenido, sin introducciones.
         """
         
         try:
             print("Enviando prompt a Gemini...", flush=True)
             ai_resp = self.call_gemini(prompt)
-            print("Respuesta recibida:", ai_resp[:50], "...", flush=True)
+            print("Respuesta recibida.", flush=True)
             self.send_msg(ai_resp)
         except Exception as e:
             self.send_msg(f"⚠️ ERROR CRÍTICO GEMINI: {e}")
@@ -511,7 +494,7 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v78.0 ROBUST: {today}", flush=True)
+        print(f"🚀 Iniciando v79.0 GHOST: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -529,7 +512,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Robust Mode)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Ghost Mode)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -546,67 +529,66 @@ class OmniHybridBot:
             sim = self.simulate_match(rh, ra, data, m_odds)
             best_bet, best_handi = self.find_best_value(sim, m_odds)
             
-            # --- LÓGICA DE VISUALIZACIÓN ---
-            
-            # 1. ¿Tenemos un Pick Principal válido?
-            if best_bet and best_bet['status'] == "VALID":
-                bets_found += 1
-                icon = "🎯"; status_line = "✅ <b>PICK ACTIVO</b>"
-                stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
-                stake_txt = f"{stake*100:.2f}%"
+            if best_bet:
+                is_valid = best_bet['status'] == "VALID"
                 
-                # Guardamos para el reporte de Gemini
-                self.daily_picks_buffer.append(f"{rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f}")
+                # --- LÓGICA GHOST PICKS ---
+                # Si es VALID: Verde y Stake
+                # Si es REJECTED: Warning y Stake Skipped (PERO SE MUESTRA EL PICK)
                 
-                # Escribimos en CSV
+                if is_valid:
+                    bets_found += 1
+                    icon = "🎯"; status_line = "✅ <b>PICK ACTIVO</b>"
+                    stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
+                    stake_txt = f"{stake*100:.2f}%"
+                    # Guardamos VALID para Gemini
+                    tag = "[VALID]"
+                    self.daily_picks_buffer.append(f"{tag} {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
+                else:
+                    icon = "⚠️"; status_line = f"🚫 <b>NO BET</b> ({best_bet['reason']})"
+                    stake = 0.0; stake_txt = "Skipped"
+                    # No guardamos REJECTED para Gemini (para que no se confunda), solo handicaps
+
+                if best_handi:
+                    self.handicap_buffer.append(f"{rh} vs {ra}: {best_handi['pick']} @ {best_handi['odd']:.2f}")
+
+                form_h = self.get_team_form_icon(data['raw_df'], rh)
+                form_a = self.get_team_form_icon(data['raw_df'], ra)
+                ph, pd_raw, pa = sim['1x2']; dc1x, dcx2 = sim['dc']; dnb_h, dnb_a = sim['dnb']
+                btts = sim['goals'][1]; ov25 = sim['goals'][0]; ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
+                h_stats, a_stats = sim['stats']; lambdas = sim['lambdas']; cs_str, cs_prob = sim['cs']
+                fair_odd_us = self.dec_to_am(1/best_bet['prob']) if best_bet['prob'] > 0 else "-"
+                
+                msg = (
+                    f"🛡️ <b>ANÁLISIS v79</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
+                    f"───────────────\n"
+                    f"{status_line}\n"
+                    f"{icon} PICK: <b>{best_bet['pick']}</b> ({best_bet['market']})\n"
+                    f"⚖️ Cuota Avg: <b>{self.dec_to_am(best_bet['odd'])}</b> ({best_bet['odd']:.2f})\n"
+                    f"🧠 Prob: <b>{best_bet['prob']*100:.1f}%</b> (Fair: {fair_odd_us})\n"
+                    f"📈 EV: <b>+{best_bet['ev']*100:.1f}%</b>\n"
+                    f"🏦 Stake: {stake_txt}\n"
+                    f"───────────────\n"
+                    f"📊 <b>X-RAY (Probabilidades):</b>\n"
+                    f"• 1X2: {ph*100:.0f}% | {pd_raw*100:.0f}% | {pa*100:.0f}%\n"
+                    f"• DC: 1X {dc1x*100:.0f}% | X2 {dcx2*100:.0f}%\n"
+                    f"• DNB: H {dnb_h*100:.0f}% | A {dnb_a*100:.0f}%\n"
+                    f"• BTTS: Sí {btts*100:.0f}% | No {(1-btts)*100:.0f}%\n"
+                    f"• Goals: Over {ov25*100:.0f}% | Under {(1-ov25)*100:.0f}%\n"
+                    f"• Handi -1.5: H {ah_h_m15*100:.0f}% | A {ah_a_m15*100:.0f}%\n"
+                    f"• Handi +1.5: H {ah_h_p15*100:.0f}% | A {ah_a_p15*100:.0f}%\n"
+                    f"───────────────\n"
+                    f"🎯 Marcador Probable: <b>{cs_str}</b> ({cs_prob:.1f}%)\n"
+                    f"⚔️ PODER (Att / Def / Exp.Goals):\n"
+                    f"🏠 {rh}: {h_stats['att']:.2f} / {h_stats['def']:.2f} => <b>{lambdas[0]:.2f}</b> gls\n"
+                    f"✈️ {ra}: {a_stats['att']:.2f} / {a_stats['def']:.2f} => <b>{lambdas[1]:.2f}</b> gls\n"
+                    f"⚖️ Confianza en Mercado: {sim['m_weight']*100:.0f}%"
+                )
+                self.send_msg(msg)
+                
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
-            
-            else:
-                # No hay pick principal, mostramos NO BET
-                icon = "⛔"; status_line = f"⚠️ <b>NO BET:</b> {best_bet['reason'] if best_bet else 'Sin valor'}"
-                stake = 0.0; stake_txt = "Skipped"
-                best_bet = {'pick': 'N/A', 'market': 'N/A', 'odd': 0.0, 'prob': 0.0, 'ev': 0.0} # Placeholder
-
-            # 2. Guardamos el Handicap "Secreto" si existe (para Parlays)
-            if best_handi:
-                self.handicap_buffer.append(f"{rh} vs {ra}: {best_handi['pick']} @ {best_handi['odd']:.2f} (Prob: {best_handi['prob']*100:.0f}%)")
-
-            # 3. Enviamos el Mensaje (Mostrando el Pick Principal, sea valido o no)
-            form_h = self.get_team_form_icon(data['raw_df'], rh)
-            form_a = self.get_team_form_icon(data['raw_df'], ra)
-            ph, pd_raw, pa = sim['1x2']; dc1x, dcx2 = sim['dc']; dnb_h, dnb_a = sim['dnb']
-            btts = sim['goals'][1]; ov25 = sim['goals'][0]; ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
-            h_stats, a_stats = sim['stats']; lambdas = sim['lambdas']; cs_str, cs_prob = sim['cs']
-            fair_odd_us = self.dec_to_am(1/best_bet['prob']) if best_bet['prob'] > 0 else "-"
-            
-            msg = (
-                f"🛡️ <b>ANÁLISIS v78</b> | {LEAGUE_CONFIG[div]['name']}\n"
-                f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
-                f"───────────────\n"
-                f"{status_line}\n"
-                f"{icon} PICK: <b>{best_bet['pick']}</b> ({best_bet['market']})\n"
-                f"⚖️ Cuota Avg: <b>{self.dec_to_am(best_bet['odd'])}</b> ({best_bet['odd']:.2f})\n"
-                f"🧠 Prob: <b>{best_bet['prob']*100:.1f}%</b> (Fair: {fair_odd_us})\n"
-                f"📈 EV: <b>+{best_bet['ev']*100:.1f}%</b>\n"
-                f"🏦 Stake: {stake_txt}\n"
-                f"───────────────\n"
-                f"📊 <b>X-RAY (Probabilidades):</b>\n"
-                f"• 1X2: {ph*100:.0f}% | {pd_raw*100:.0f}% | {pa*100:.0f}%\n"
-                f"• DC: 1X {dc1x*100:.0f}% | X2 {dcx2*100:.0f}%\n"
-                f"• DNB: H {dnb_h*100:.0f}% | A {dnb_a*100:.0f}%\n"
-                f"• BTTS: Sí {btts*100:.0f}% | No {(1-btts)*100:.0f}%\n"
-                f"• Goals: Over {ov25*100:.0f}% | Under {(1-ov25)*100:.0f}%\n"
-                f"• Handi -1.5: H {ah_h_m15*100:.0f}% | A {ah_a_m15*100:.0f}%\n"
-                f"• Handi +1.5: H {ah_h_p15*100:.0f}% | A {ah_a_p15*100:.0f}%\n"
-                f"───────────────\n"
-                f"🎯 Marcador Probable: <b>{cs_str}</b> ({cs_prob:.1f}%)\n"
-                f"⚔️ PODER (Att / Def / Exp.Goals):\n"
-                f"🏠 {rh}: {h_stats['att']:.2f} / {h_stats['def']:.2f} => <b>{lambdas[0]:.2f}</b> gls\n"
-                f"✈️ {ra}: {a_stats['att']:.2f} / {a_stats['def']:.2f} => <b>{lambdas[1]:.2f}</b> gls\n"
-                f"⚖️ Confianza en Mercado: {sim['m_weight']*100:.0f}%"
-            )
-            self.send_msg(msg)
 
         if bets_found > 0 or len(self.daily_picks_buffer) > 0 or len(self.handicap_buffer) > 0:
             self.generate_final_summary()
