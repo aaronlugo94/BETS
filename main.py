@@ -13,13 +13,13 @@ import math
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v72.0 (SWEET SPOT & NARRATIVE AI) ---
+# --- CONFIGURACIÓN v75.0 (PROFIT HUNTER & COLD ANALYSIS) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:05" 
+RUN_TIME = "04:16" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -71,13 +71,13 @@ class OmniHybridBot:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v72.0 SWEET SPOT STARTED ---", flush=True)
+        print("--- ENGINE v75.0 PROFIT HUNTER STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
             with open(HISTORY_FILE, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Result', 'Profit'])
+                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Status', 'Stake', 'Profit', 'FTHG', 'FTAG'])
 
     # --- TELEGRAM ---
     def clean_text(self, text):
@@ -138,24 +138,28 @@ class OmniHybridBot:
         return w_att / total_w, w_def / total_w
 
     def get_league_data(self, div):
-        if div in self.history_cache: return self.history_cache[div]
         url = f"https://www.football-data.co.uk/mmz4281/{SEASON}/{div}.csv"
         try:
             r = requests.get(url, headers={'User-Agent': USER_AGENTS[0]}, timeout=15)
             if r.status_code != 200: return None
             try: df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
             except: df = pd.read_csv(io.StringIO(r.content.decode('latin-1')))
-            df = df.dropna(subset=['FTHG', 'FTAG'])
+            df = df.dropna(subset=['HomeTeam', 'AwayTeam'])
             
-            avg_g = df.FTHG.mean() + df.FTAG.mean()
+            matches_played = df.dropna(subset=['FTHG', 'FTAG'])
+            if len(matches_played) > 0:
+                avg_g = matches_played.FTHG.mean() + matches_played.FTAG.mean()
+            else: avg_g = 2.5
+            
             teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
             team_stats = {}
             avg_att = 0; avg_def = 0; cnt = 0
             for t in teams:
-                a, d = self.calculate_team_stats(df, t)
+                a, d = self.calculate_team_stats(matches_played, t)
                 team_stats[t] = {'att': a, 'def': d}
                 avg_att += a; avg_def += d; cnt += 1
-            avg_att /= cnt; avg_def /= cnt
+            if cnt > 0: avg_att /= cnt; avg_def /= cnt
+            else: avg_att = 1; avg_def = 1
             
             norm_stats = {t: {'att': s['att']/avg_att, 'def': s['def']/avg_def} for t, s in team_stats.items()}
             league_weight = LEAGUE_CONFIG.get(div, {}).get('weight', 0.70)
@@ -163,7 +167,7 @@ class OmniHybridBot:
             return self.history_cache[div]
         except: return None
 
-    # --- MOTOR MATEMÁTICO: DIXON-COLES ---
+    # --- MOTOR MATEMÁTICO ---
     def poisson_prob(self, k, lamb):
         return (math.pow(lamb, k) * math.exp(-lamb)) / math.factorial(k)
 
@@ -258,22 +262,19 @@ class OmniHybridBot:
             'gcs': gcs, 'cs': (cs_str, cs_prob), 'm_weight': m_weight
         }
 
-    # --- MULTI-BOOKIE ---
     def get_avg_odds(self, row):
         def get_avg(cols):
             vals = [float(row[c]) for c in cols if row.get(c) and str(row[c]).replace('.','').isdigit()]
             return sum(vals)/len(vals) if vals else 0.0
-        
-        btts_yes = get_avg(['BbAvBBTS', 'B365BTTSY'])
         return {
             'H': get_avg(['B365H', 'PSH', 'WHH']),
             'D': get_avg(['B365D', 'PSD', 'WHD']),
             'A': get_avg(['B365A', 'PSA', 'WHA']),
             'O25': get_avg(['B365>2.5', 'P>2.5', 'WH>2.5']),
-            'BTTS_Y': btts_yes
+            'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- SELECCIÓN DEL "SWEET SPOT" ---
+    # --- PROFIT HUNTER (SELECCIÓN MODIFICADA) ---
     def find_best_value(self, sim, odds):
         candidates = []
         def add(name, market, prob, odd, gcs=None):
@@ -281,7 +282,6 @@ class OmniHybridBot:
             ev = (prob * odd) - 1
             status = "VALID"; reason = "OK"
             
-            # Filtros básicos
             if ev < MIN_EV_THRESHOLD: status="REJECTED"; reason=f"EV Bajo ({ev*100:.1f}%)"
             elif prob < 0.35: status="REJECTED"; reason=f"Riesgo ({prob*100:.0f}%)"
             elif ev > 0.45: status="REJECTED"; reason="Error Modelo"
@@ -289,16 +289,15 @@ class OmniHybridBot:
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
             
-            # --- ALGORITMO SWEET SPOT (Nuevo) ---
-            # El Score ya no es solo EV. Premia el rango de cuota 1.70 - 2.40
             base_score = ev * (prob ** 1.5)
             
-            # Penalización por cuota muy baja (Aburrida)
-            if odd < 1.40: base_score *= 0.5 
-            # Penalización por cuota baja (Segura pero poco jugo)
-            elif odd < 1.60: base_score *= 0.8
-            # Bonus por "Sweet Spot" (Jugo ideal)
-            elif 1.70 <= odd <= 2.40: base_score *= 1.2
+            # --- MODIFICACIÓN AGRESIVA PARA EVITAR CUOTAS 1.15 ---
+            # Si la cuota es menor a 1.60, destruimos el Score.
+            # Esto fuerza al bot a elegir DNB, GANA o DC con mejor pago.
+            if odd < 1.60: base_score *= 0.1  # PENALIZACIÓN BRUTAL (Solo sirve de backup)
+            
+            # Premiamos el rango "Profit Hunter" (1.70 - 2.50)
+            elif 1.70 <= odd <= 2.50: base_score *= 1.5
             
             candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': base_score, 'status': status, 'reason': reason})
 
@@ -311,7 +310,7 @@ class OmniHybridBot:
             add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94)
             add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94)
 
-        # 2. Goles y BTTS
+        # 2. Mercados Goles
         if odds['O25'] > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], odds['O25'], sim['gcs'])
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], 1 / (1 - (1/odds['O25'] * 1.05)), sim['gcs'])
@@ -319,7 +318,7 @@ class OmniHybridBot:
             add("BTTS SÍ", "BTTS", sim['goals'][1], odds['BTTS_Y'])
             add("BTTS NO", "BTTS", 1-sim['goals'][1], 1 / (1 - (1/odds['BTTS_Y']*1.05)))
         
-        # 3. Handicaps (Solo si son MUY claros, pero penalizados en score para que no dominen)
+        # 3. Handicaps (Siguen existiendo para el Parlay, pero con score bajo si son 1.15)
         ah_h_plus = sim['ah'][2]; ah_a_plus = sim['ah'][3]
         if ah_h_plus > 0.92: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
         if ah_a_plus > 0.92: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
@@ -327,6 +326,7 @@ class OmniHybridBot:
         if not candidates: return None
         validos = [c for c in candidates if c['status'] == "VALID"]
         if validos:
+            # Ordenamos por score modificado (que ahora odia las cuotas bajas)
             validos.sort(key=lambda x: x['score'], reverse=True)
             return validos[0]
         else:
@@ -357,12 +357,114 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- GEMINI: NARRATIVA Y ESTRATEGIA ---
+    # --- PnL & AUDITORÍA ---
+    def check_bet_result(self, pick, market, fthg, ftag):
+        if math.isnan(fthg) or math.isnan(ftag): return "PENDING"
+        hg = int(fthg); ag = int(ftag)
+        win = False
+        if market == "1X2":
+            if "HOME" in pick and hg > ag: win=True
+            elif "AWAY" in pick and ag > hg: win=True
+            elif "DRAW" in pick and hg == ag: win=True
+        elif market == "DNB":
+            if hg == ag: return "PUSH"
+            if ("HOME" in pick and hg > ag) or ("AWAY" in pick and ag > hg): win=True
+        elif market == "Double Chance":
+            if ("1X" in pick and hg >= ag) or ("X2" in pick and ag >= hg): win=True
+        elif market == "GOALS":
+            if "OVER" in pick and (hg+ag) > 2.5: win=True
+            elif "UNDER" in pick and (hg+ag) < 2.5: win=True
+        elif market == "BTTS":
+            if "SÍ" in pick and (hg>0 and ag>0): win=True
+            elif "NO" in pick and not (hg>0 and ag>0): win=True
+        elif market == "HANDI":
+            if "H +1.5" in pick and (hg+1.5)>ag: win=True
+            elif "A +1.5" in pick and (ag+1.5)>hg: win=True
+        return "WIN" if win else "LOSS"
+
+    def calculate_pnl(self):
+        if not os.path.exists(HISTORY_FILE): return
+        try:
+            df = pd.read_csv(HISTORY_FILE)
+            df['Profit'] = pd.to_numeric(df['Profit'], errors='coerce').fillna(0)
+            df['Stake'] = pd.to_numeric(df['Stake'], errors='coerce').fillna(0)
+            today_dt = datetime.now().strftime('%d/%m/%Y')
+            df_today = df[df['Date'] == today_dt]
+            df_wins = df[df['Status'] == 'WIN']
+            
+            total_profit = df['Profit'].sum()
+            today_profit = df_today['Profit'].sum()
+            total_staked = df['Stake'].sum()
+            roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
+            win_rate = (len(df_wins) / len(df[df['Status'].isin(['WIN','LOSS'])])) * 100 if len(df[df['Status'].isin(['WIN','LOSS'])]) > 0 else 0
+            
+            report = (
+                f"💰 <b>REPORTE PnL (Profit & Loss)</b>\n"
+                f"📆 <b>Hoy:</b> {today_profit:+.2f} U\n"
+                f"📈 <b>Total:</b> {total_profit:+.2f} U\n"
+                f"📊 <b>ROI:</b> {roi:.1f}% | <b>WR:</b> {win_rate:.0f}%\n"
+            )
+            self.send_msg(report)
+        except Exception as e: print(f"Error PnL: {e}")
+
+    def run_audit(self):
+        print("🕵️‍♂️ Iniciando Auditoría Forense...", flush=True)
+        if not os.path.exists(HISTORY_FILE): return
+        league_data_map = {}
+        for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
+
+        rows = []; audit_buffer = []
+        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f); header = next(reader); rows.append(header)
+            for row in reader:
+                status = row[9]
+                if status in ['VALID', '0'] and row[1] in league_data_map:
+                    div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]; odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
+                    data = league_data_map.get(div)
+                    if data:
+                        raw_df = data['raw_df']
+                        match = raw_df[(raw_df['HomeTeam']==home) & (raw_df['AwayTeam']==away)]
+                        if not match.empty:
+                            fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
+                            res = self.check_bet_result(pick, market, fthg, ftag)
+                            if res in ["WIN", "LOSS", "PUSH"]:
+                                row[9] = res; row[12] = fthg; row[13] = ftag
+                                if res == "WIN": row[11] = round((stake * odd) - stake, 2)
+                                elif res == "LOSS": row[11] = round(-stake, 2)
+                                else: row[11] = 0.0
+                                audit_buffer.append(f"Pick: {pick} | Result: {res} | Profit: {row[11]}")
+                rows.append(row)
+
+        with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f); writer.writerows(rows)
+
+        if audit_buffer:
+            self.calculate_pnl()
+            audit_text = "\n".join(audit_buffer)
+            prompt = f"""
+            Eres el CONSULTOR SENIOR del fondo.
+            RESULTADOS DE AYER:
+            {audit_text}
+            
+            TAREA:
+            1. Diagnóstico: ¿Por qué fallamos o ganamos?
+            2. MEJORA TÉCNICA: ¿Debo ajustar algún peso de liga?
+            
+            FORMATO HTML:
+            👨‍🏫 <b>CONSULTORÍA TÉCNICA</b>
+            📑 <b>Diagnóstico:</b> ...
+            🔧 <b>ORDEN DE INGENIERÍA:</b> ...
+            """
+            ai_resp = self.call_gemini(prompt)
+            if ai_resp: self.send_msg(ai_resp)
+
+    # --- MAIN STRATEGY ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
         picks_text = "\n".join(self.daily_picks_buffer)
         
+        # PROMPT CLÁSICO (ANÁLISIS FRÍO) + PARLAYS
         prompt = f"""
         Eres el JEFE DE ESTRATEGIA de un fondo de inversión deportiva (Quant Fund).
         
@@ -371,32 +473,20 @@ class OmniHybridBot:
         {picks_text}
         ===
 
-        TU MISIÓN (Análisis Avanzado):
-        
-        1. 🔮 SIMULACIÓN NARRATIVA (Game Script):
-           - Elige el partido más interesante (La Joya).
-           - Basado en AttStr/DefStr, describe el "Guion del Partido". ¿Quién domina? ¿Gol temprano? 
-           - Escribe un mini-guion de cómo se desarrollará el caos.
-        
-        2. 🧪 ANÁLISIS DE CORRELACIÓN (Anti-Parlay):
-           - Revisa si hay "Correlación Tóxica" entre los picks. (Ej: Dos Unders en ligas goleadoras).
-           - Calcula un 'Índice de Diversificación' (0-10).
-
-        3. 🎲 CONSTRUYE 2 PARLAYS:
-           - PARLAY SEGURO (x2.00 aprox): Combina Bankers sólidos.
+        TU MISIÓN:
+        1. Audita los picks y elimina los "NO BET" de tu análisis.
+        2. Elige "LA JOYA" (Máximo Valor, cuota > 1.70) y "EL BANKER" (Máxima Seguridad).
+        3. 🎲 CONSTRUYE 2 PARLAYS (COMBINADAS):
+           - PARLAY SEGURO (x2.00 aprox): Combina Bankers/Handicaps sólidos.
            - PARLAY DE VALOR (x3.50+): Combina Joyas de alto EV.
-
-        FORMATO DE SALIDA (HTML Limpio):
-        🧠 <b>DICTAMEN FINAL v72</b>
         
-        💎 <b>LA JOYA:</b> [Pick]
-        🛡️ <b>EL BANKER:</b> [Pick]
-
-        🔮 <b>SIMULACIÓN DEL PARTIDO (La Joya):</b>
-        [Tu guion narrativo aquí...]
-
-        🧪 <b>CORRELACIÓN Y TOXICIDAD:</b>
-        [Análisis breve]
+        FORMATO HTML (Limpio y Frío):
+        🧠 <b>DICTAMEN FINAL v75</b>
+        
+        💎 <b>LA JOYA:</b> [Pick] (EV: %)
+        🛡️ <b>EL BANKER:</b> [Pick] (EV: %)
+        ✅ <b>LISTA DE VALOR:</b> [Breve lista]
+        📊 <b>ESTRATEGIA:</b> [Análisis frío y directo. Por qué elegimos estos.]
         
         🎲 <b>PARLAY SEGURO (x2.xx):</b>
         1. [Pick]
@@ -410,9 +500,10 @@ class OmniHybridBot:
         if ai_resp: self.send_msg(ai_resp)
 
     def run_analysis(self):
+        self.run_audit()
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v72.0 SWEET SPOT: {today}", flush=True)
+        print(f"🚀 Iniciando v75.0 PROFIT HUNTER: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -430,12 +521,11 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Sweet Spot Edition)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Profit Hunter)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
             if div not in LEAGUE_CONFIG: continue
-            
             data = self.get_league_data(div)
             if not data: continue
             
@@ -462,20 +552,14 @@ class OmniHybridBot:
                 form_h = self.get_team_form_icon(data['raw_df'], rh)
                 form_a = self.get_team_form_icon(data['raw_df'], ra)
                 
-                ph, pd_raw, pa = sim['1x2']
-                dc1x, dcx2 = sim['dc']
-                dnb_h, dnb_a = sim['dnb']
-                btts = sim['goals'][1]
-                ov25 = sim['goals'][0]
-                ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
-                h_stats, a_stats = sim['stats']
-                lambdas = sim['lambdas']
-                cs_str, cs_prob = sim['cs']
+                ph, pd_raw, pa = sim['1x2']; dc1x, dcx2 = sim['dc']; dnb_h, dnb_a = sim['dnb']
+                btts = sim['goals'][1]; ov25 = sim['goals'][0]; ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
+                h_stats, a_stats = sim['stats']; lambdas = sim['lambdas']; cs_str, cs_prob = sim['cs']
                 fair_odd_us = self.dec_to_am(1/best_bet['prob'])
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v72</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v75</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
@@ -506,7 +590,7 @@ class OmniHybridBot:
                     self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
-                    csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], 0])
+                    csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
 
         if bets_found > 0:
             self.generate_final_summary()
