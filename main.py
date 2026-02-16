@@ -13,13 +13,13 @@ import math
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v75.0 (PROFIT HUNTER & COLD ANALYSIS) ---
+# --- CONFIGURACIÓN v76.0 (AGGRESSIVE VALUE & UNCENSORED AI) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:16" 
+RUN_TIME = "04:22" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -36,8 +36,10 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
+# Configuración de Gemini (SDK Nuevo)
 try:
     from google import genai
+    from google.genai import types
     SDK_AVAILABLE = True
 except ImportError:
     SDK_AVAILABLE = False
@@ -66,12 +68,12 @@ class OmniHybridBot:
         if SDK_AVAILABLE and GEMINI_API_KEY:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                print("🧠 Gemini SDK: INICIALIZADO (v2.0 Flash)", flush=True)
+                print("🧠 Gemini SDK: INICIALIZADO (v2.0 Flash - Uncensored)", flush=True)
             except Exception as e:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v75.0 PROFIT HUNTER STARTED ---", flush=True)
+        print("--- ENGINE v76.0 AGGRESSIVE VALUE STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -112,12 +114,41 @@ class OmniHybridBot:
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
+    # --- GEMINI LLM CALL (UNCENSORED) ---
     def call_gemini(self, prompt):
         if not SDK_AVAILABLE or not self.ai_client: return "❌ SDK no disponible."
         try:
-            r = self.ai_client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            # Configuración para evitar bloqueos de contenido (Apuestas)
+            config = types.GenerateContentConfig(
+                safety_settings=[
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="BLOCK_NONE"
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="BLOCK_NONE"
+                    ),
+                ]
+            )
+            
+            r = self.ai_client.models.generate_content(
+                model="gemini-2.0-flash", 
+                contents=prompt,
+                config=config
+            )
             return r.text
-        except Exception as e: return f"❌ Error Gemini: {str(e)[:100]}"
+        except Exception as e: 
+            print(f"❌ Error Gemini API: {e}")
+            return f"⚠️ Error de IA: {str(e)[:100]}"
 
     # --- CÁLCULO ---
     def calculate_team_stats(self, df, team):
@@ -274,7 +305,7 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- PROFIT HUNTER (SELECCIÓN MODIFICADA) ---
+    # --- PROFIT HUNTER (SELECCIÓN AGRESIVA) ---
     def find_best_value(self, sim, odds):
         candidates = []
         def add(name, market, prob, odd, gcs=None):
@@ -282,22 +313,25 @@ class OmniHybridBot:
             ev = (prob * odd) - 1
             status = "VALID"; reason = "OK"
             
+            # FILTRO 1: Calidad Básica
             if ev < MIN_EV_THRESHOLD: status="REJECTED"; reason=f"EV Bajo ({ev*100:.1f}%)"
             elif prob < 0.35: status="REJECTED"; reason=f"Riesgo ({prob*100:.0f}%)"
             elif ev > 0.45: status="REJECTED"; reason="Error Modelo"
+            
             if market == 'GOALS':
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
             
+            # FILTRO 2: ODIO AL HANDICAP BARATO
+            # Si es Handicap < 1.50, lo marcamos como BACKUP (No puede ser pick principal)
+            if market == "HANDI" and odd < 1.50:
+                status = "BACKUP" 
+                reason = "Cuota Baja (Backup)"
+            
             base_score = ev * (prob ** 1.5)
             
-            # --- MODIFICACIÓN AGRESIVA PARA EVITAR CUOTAS 1.15 ---
-            # Si la cuota es menor a 1.60, destruimos el Score.
-            # Esto fuerza al bot a elegir DNB, GANA o DC con mejor pago.
-            if odd < 1.60: base_score *= 0.1  # PENALIZACIÓN BRUTAL (Solo sirve de backup)
-            
-            # Premiamos el rango "Profit Hunter" (1.70 - 2.50)
-            elif 1.70 <= odd <= 2.50: base_score *= 1.5
+            # Bonus por Rango de Oro (1.70 - 2.50)
+            if 1.70 <= odd <= 2.50: base_score *= 1.3
             
             candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': base_score, 'status': status, 'reason': reason})
 
@@ -310,7 +344,7 @@ class OmniHybridBot:
             add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94)
             add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94)
 
-        # 2. Mercados Goles
+        # 2. Goles y BTTS
         if odds['O25'] > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], odds['O25'], sim['gcs'])
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], 1 / (1 - (1/odds['O25'] * 1.05)), sim['gcs'])
@@ -318,20 +352,27 @@ class OmniHybridBot:
             add("BTTS SÍ", "BTTS", sim['goals'][1], odds['BTTS_Y'])
             add("BTTS NO", "BTTS", 1-sim['goals'][1], 1 / (1 - (1/odds['BTTS_Y']*1.05)))
         
-        # 3. Handicaps (Siguen existiendo para el Parlay, pero con score bajo si son 1.15)
+        # 3. Handicaps (Para backups)
         ah_h_plus = sim['ah'][2]; ah_a_plus = sim['ah'][3]
         if ah_h_plus > 0.92: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
         if ah_a_plus > 0.92: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
 
         if not candidates: return None
-        validos = [c for c in candidates if c['status'] == "VALID"]
-        if validos:
-            # Ordenamos por score modificado (que ahora odia las cuotas bajas)
-            validos.sort(key=lambda x: x['score'], reverse=True)
-            return validos[0]
-        else:
-            candidates.sort(key=lambda x: x['ev'], reverse=True)
-            return candidates[0]
+        
+        # Primero buscamos VALID (Principales)
+        principales = [c for c in candidates if c['status'] == "VALID"]
+        if principales:
+            principales.sort(key=lambda x: x['score'], reverse=True)
+            return principales[0]
+        
+        # Si no hay principales válidos, buscamos BACKUPS (Handicaps seguros)
+        backups = [c for c in candidates if c['status'] == "BACKUP"]
+        if backups:
+            # Solo si no hay nada mejor, damos el Handicap
+            backups.sort(key=lambda x: x['ev'], reverse=True)
+            return backups[0]
+            
+        return candidates[0] # Fallback (Rejected)
 
     def get_kelly_stake(self, prob, odds, market):
         if odds <= 1.0: return 0.0
@@ -391,19 +432,12 @@ class OmniHybridBot:
             today_dt = datetime.now().strftime('%d/%m/%Y')
             df_today = df[df['Date'] == today_dt]
             df_wins = df[df['Status'] == 'WIN']
-            
             total_profit = df['Profit'].sum()
             today_profit = df_today['Profit'].sum()
             total_staked = df['Stake'].sum()
             roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
             win_rate = (len(df_wins) / len(df[df['Status'].isin(['WIN','LOSS'])])) * 100 if len(df[df['Status'].isin(['WIN','LOSS'])]) > 0 else 0
-            
-            report = (
-                f"💰 <b>REPORTE PnL (Profit & Loss)</b>\n"
-                f"📆 <b>Hoy:</b> {today_profit:+.2f} U\n"
-                f"📈 <b>Total:</b> {total_profit:+.2f} U\n"
-                f"📊 <b>ROI:</b> {roi:.1f}% | <b>WR:</b> {win_rate:.0f}%\n"
-            )
+            report = (f"💰 <b>REPORTE PnL (Profit & Loss)</b>\n📆 <b>Hoy:</b> {today_profit:+.2f} U\n📈 <b>Total:</b> {total_profit:+.2f} U\n📊 <b>ROI:</b> {roi:.1f}% | <b>WR:</b> {win_rate:.0f}%\n")
             self.send_msg(report)
         except Exception as e: print(f"Error PnL: {e}")
 
@@ -418,7 +452,7 @@ class OmniHybridBot:
             reader = csv.reader(f); header = next(reader); rows.append(header)
             for row in reader:
                 status = row[9]
-                if status in ['VALID', '0'] and row[1] in league_data_map:
+                if status in ['VALID', 'BACKUP', '0'] and row[1] in league_data_map:
                     div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]; odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
                     data = league_data_map.get(div)
                     if data:
@@ -441,20 +475,7 @@ class OmniHybridBot:
         if audit_buffer:
             self.calculate_pnl()
             audit_text = "\n".join(audit_buffer)
-            prompt = f"""
-            Eres el CONSULTOR SENIOR del fondo.
-            RESULTADOS DE AYER:
-            {audit_text}
-            
-            TAREA:
-            1. Diagnóstico: ¿Por qué fallamos o ganamos?
-            2. MEJORA TÉCNICA: ¿Debo ajustar algún peso de liga?
-            
-            FORMATO HTML:
-            👨‍🏫 <b>CONSULTORÍA TÉCNICA</b>
-            📑 <b>Diagnóstico:</b> ...
-            🔧 <b>ORDEN DE INGENIERÍA:</b> ...
-            """
+            prompt = f"Eres el CONSULTOR SENIOR del fondo.\nRESULTADOS AYER:\n{audit_text}\n\nTAREA:\n1. Diagnóstico breve.\n2. MEJORA TÉCNICA: Ajustes de pesos.\n\nHTML:\n👨‍🏫 <b>CONSULTORÍA TÉCNICA</b>\n📑 <b>Diagnóstico:</b> ...\n🔧 <b>ORDEN DE INGENIERÍA:</b> ..."
             ai_resp = self.call_gemini(prompt)
             if ai_resp: self.send_msg(ai_resp)
 
@@ -464,7 +485,6 @@ class OmniHybridBot:
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
         picks_text = "\n".join(self.daily_picks_buffer)
         
-        # PROMPT CLÁSICO (ANÁLISIS FRÍO) + PARLAYS
         prompt = f"""
         Eres el JEFE DE ESTRATEGIA de un fondo de inversión deportiva (Quant Fund).
         
@@ -474,19 +494,19 @@ class OmniHybridBot:
         ===
 
         TU MISIÓN:
-        1. Audita los picks y elimina los "NO BET" de tu análisis.
+        1. Audita los picks y elimina los "NO BET".
         2. Elige "LA JOYA" (Máximo Valor, cuota > 1.70) y "EL BANKER" (Máxima Seguridad).
         3. 🎲 CONSTRUYE 2 PARLAYS (COMBINADAS):
            - PARLAY SEGURO (x2.00 aprox): Combina Bankers/Handicaps sólidos.
            - PARLAY DE VALOR (x3.50+): Combina Joyas de alto EV.
         
         FORMATO HTML (Limpio y Frío):
-        🧠 <b>DICTAMEN FINAL v75</b>
+        🧠 <b>DICTAMEN FINAL v76</b>
         
         💎 <b>LA JOYA:</b> [Pick] (EV: %)
         🛡️ <b>EL BANKER:</b> [Pick] (EV: %)
         ✅ <b>LISTA DE VALOR:</b> [Breve lista]
-        📊 <b>ESTRATEGIA:</b> [Análisis frío y directo. Por qué elegimos estos.]
+        📊 <b>ESTRATEGIA:</b> [Análisis frío y directo.]
         
         🎲 <b>PARLAY SEGURO (x2.xx):</b>
         1. [Pick]
@@ -503,7 +523,7 @@ class OmniHybridBot:
         self.run_audit()
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v75.0 PROFIT HUNTER: {today}", flush=True)
+        print(f"🚀 Iniciando v76.0 AGGRESSIVE VALUE: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -540,11 +560,19 @@ class OmniHybridBot:
             
             if best_bet:
                 is_valid = best_bet['status'] == "VALID"
+                # Si el mejor pick es BACKUP (Handicap), lo mostramos como info pero NO como pick activo principal
+                is_backup = best_bet['status'] == "BACKUP"
+                
                 if is_valid:
                     bets_found += 1
                     icon = "🎯"; status_line = "✅ <b>PICK ACTIVO</b>"
                     stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
                     stake_txt = f"{stake*100:.2f}%"
+                elif is_backup:
+                    # Lo mostramos como "NO BET (Seguro)" o como "PICK RESERVA"
+                    # Para tu gusto, mejor NO BET y que Gemini lo use en Parlay
+                    icon = "🛡️"; status_line = "⚠️ <b>NO BET:</b> Cuota muy baja (Backup)"
+                    stake = 0.0; stake_txt = "Skipped"
                 else:
                     icon = "⛔"; status_line = f"⚠️ <b>NO BET:</b> {best_bet['reason']}"
                     stake = 0.0; stake_txt = "Skipped"
@@ -559,7 +587,7 @@ class OmniHybridBot:
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v75</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v76</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
@@ -586,13 +614,14 @@ class OmniHybridBot:
                 )
                 self.send_msg(msg)
                 
-                if is_valid:
+                # Guardamos en buffer tanto VALIDS como BACKUPS para que Gemini los use en Parlays
+                if is_valid or is_backup:
                     self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
 
-        if bets_found > 0:
+        if bets_found > 0 or len(self.daily_picks_buffer) > 0:
             self.generate_final_summary()
         else:
             self.send_msg("🧹 Barrido completado: Sin oportunidades claras hoy.")
