@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v83.0 (GOD MODE: ELO MATH + v80 OUTPUT) ---
+# --- CONFIGURACIÓN v83.1 (GOD MODE + BUGFIX) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "18:50" 
+RUN_TIME = "18:54" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -75,8 +75,8 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = [] 
         
-        print("--- ENGINE v83.0 GOD MODE STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v83.0 (ELO + GHOST)</b>\n📂 CSV: {HISTORY_FILE}\nEstado SDK: {SDK_STATUS}")
+        print("--- ENGINE v83.1 FIXED STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v83.1</b>\n📂 CSV: {HISTORY_FILE}\nEstado SDK: {SDK_STATUS}")
         
         self._init_history_file()
         
@@ -97,7 +97,7 @@ class OmniHybridBot:
                     writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Status', 'Stake', 'Profit', 'FTHG', 'FTAG'])
             except Exception as e: print(f"Error CSV: {e}")
 
-    # --- SANITIZER (v80 Output Protection) ---
+    # --- SANITIZER ---
     def sanitize_text(self, text):
         text = text.replace("```html", "").replace("```", "")
         text = re.sub(r'<!DOCTYPE.*?>', '', text, flags=re.DOTALL | re.IGNORECASE)
@@ -113,8 +113,7 @@ class OmniHybridBot:
             for chunk in chunks: self.send_msg(chunk, retry_count, use_html)
             return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        p_mode = "HTML" if use_html else None
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": p_mode}
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML" if use_html else None}
         try:
             r = requests.post(url, json=payload, timeout=20)
             if r.status_code == 200: return
@@ -127,6 +126,15 @@ class OmniHybridBot:
         if decimal_odd <= 1.01: return "-10000"
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
+
+    # --- RESTORED TEST FUNCTION ---
+    def test_gemini_connection(self):
+        try:
+            response = self.call_gemini("Responde 'OK' si me lees.")
+            if "OK" in response: print("Gemini OK")
+            else: self.send_msg(f"⚠️ Gemini respondió raro: {response}")
+        except Exception as e:
+            self.send_msg(f"❌ FALLO TEST GEMINI: {str(e)}")
 
     def call_gemini(self, prompt):
         if not SDK_AVAILABLE or not self.ai_client: return "❌ SDK no disponible."
@@ -144,7 +152,7 @@ class OmniHybridBot:
             return r.text if r.text else "⚠️ Respuesta vacía."
         except Exception as e: return f"⚠️ Error Gemini: {str(e)[:100]}"
 
-    # --- MOTOR ELO (DE LA v81) ---
+    # --- MOTOR ELO ---
     def calculate_elo_ratings(self, df):
         elo_ratings = {} 
         base_elo = 1500; k_factor = 20 
@@ -170,7 +178,7 @@ class OmniHybridBot:
                 elo_ratings[a_team] = a_elo + k_factor * (a_res - a_exp)
         return elo_ratings
 
-    # --- STATS HÍBRIDAS (DE LA v81 - GOLES + TIROS) ---
+    # --- STATS HÍBRIDAS ---
     def calculate_team_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
@@ -210,7 +218,6 @@ class OmniHybridBot:
             if len(matches_played) > 0: avg_g = matches_played.FTHG.mean() + matches_played.FTAG.mean()
             else: avg_g = 2.5
             
-            # --- FUSIÓN v81: ELO + HYBRID ---
             elo_map = self.calculate_elo_ratings(matches_played)
             teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
             team_stats = {}
@@ -253,7 +260,6 @@ class OmniHybridBot:
         h_st = league_data['stats'].get(home, {'att':1.0, 'def':1.0})
         a_st = league_data['stats'].get(away, {'att':1.0, 'def':1.0})
         
-        # --- ELO BOOST (DE LA v81) ---
         h_elo = league_data['elo'].get(home, 1500)
         a_elo = league_data['elo'].get(away, 1500)
         elo_diff = h_elo - a_elo
@@ -276,7 +282,6 @@ class OmniHybridBot:
             implied_h = (1 / market_odds['H']) / margin
             implied_a = (1 / market_odds['A']) / margin
             implied_d = (1 / market_odds['D']) / margin
-            # Weight: 70% Mercado / 30% Modelo (Conservador para ELO)
             raw_h = (implied_h * 0.7) + (prob_h * 0.3)
             raw_a = (implied_a * 0.7) + (prob_a * 0.3)
             raw_d = (implied_d * 0.7) + (prob_d * 0.3)
@@ -326,7 +331,7 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- SELECCIÓN (FORMATO GHOST v80) ---
+    # --- SELECCIÓN ---
     def find_best_value(self, sim, odds):
         candidates = []
         handicap_candidates = []
@@ -412,7 +417,7 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- AUDITORÍA & PNL ---
+    # --- AUDIT & PNL ---
     def check_bet_result(self, pick, market, fthg, ftag):
         if math.isnan(fthg): return "PENDING"
         hg = int(fthg); ag = int(ftag); win = False
@@ -467,7 +472,7 @@ class OmniHybridBot:
                 except: pass
         except: pass
 
-    # --- OUTPUT GHOST MODE (v80) ---
+    # --- OUTPUT ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer and not self.handicap_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
@@ -504,7 +509,7 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v83.0 GOD MODE: {today}", flush=True)
+        print(f"🚀 Iniciando v83.1 GOD MODE: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
