@@ -10,14 +10,15 @@ import csv
 import json
 import re
 from datetime import datetime, timedelta
+from collections import Counter
 
-# --- CONFIGURACIÓN v67.0 (FULL DASHBOARD COMPLETE) ---
+# --- CONFIGURACIÓN v68.0 (PREDICTIVE SCORE ADDED) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "02:53" 
+RUN_TIME = "03:03" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -72,7 +73,7 @@ class OmniHybridBot:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v67 FULL DASHBOARD STARTED ---", flush=True)
+        print("--- ENGINE v68 SCORE PREDICTOR STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -121,7 +122,7 @@ class OmniHybridBot:
             return r.text
         except Exception as e: return f"❌ Error Gemini: {str(e)[:100]}"
 
-    # --- CÁLCULO ATAQUE Y DEFENSA ---
+    # --- CÁLCULO ---
     def calculate_team_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
@@ -153,12 +154,10 @@ class OmniHybridBot:
             teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
             team_stats = {}
             avg_att = 0; avg_def = 0; cnt = 0
-            
             for t in teams:
                 a, d = self.calculate_team_stats(df, t)
                 team_stats[t] = {'att': a, 'def': d}
                 avg_att += a; avg_def += d; cnt += 1
-            
             avg_att /= cnt; avg_def /= cnt
             
             norm_stats = {t: {'att': s['att']/avg_att, 'def': s['def']/avg_def} for t, s in team_stats.items()}
@@ -166,7 +165,7 @@ class OmniHybridBot:
             return self.history_cache[div]
         except: return None
 
-    # --- SIMULACIÓN POISSON AVANZADA ---
+    # --- SIMULACIÓN Y MARCADOR EXACTO ---
     def calibrate_goal_prob(self, p):
         return 0.5 + (p - 0.5) * 0.75
 
@@ -183,7 +182,15 @@ class OmniHybridBot:
         h_sim = np.random.poisson(lambda_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(lambda_a, SIMULATION_RUNS)
         
-        # 1X2 Probabilidades Modelo
+        # --- NUEVO: MARCADOR EXACTO MÁS PROBABLE ---
+        # Empaquetamos resultados en tuplas (goles_local, goles_visita)
+        sim_scores = list(zip(h_sim, a_sim))
+        # Contamos cual es la tupla más común
+        most_common_score, count = Counter(sim_scores).most_common(1)[0]
+        score_prob = (count / SIMULATION_RUNS) * 100
+        correct_score_str = f"{most_common_score[0]}-{most_common_score[1]}"
+        
+        # Resto de la lógica (igual a v67)
         model_h = np.mean(h_sim > a_sim)
         model_a = np.mean(h_sim < a_sim)
         model_d = np.mean(h_sim == a_sim)
@@ -203,7 +210,6 @@ class OmniHybridBot:
         else:
             final_h, final_d, final_a = model_h, model_d, model_a
 
-        # Goles
         over25_raw = np.mean((h_sim + a_sim) > 2.5)
         over25 = self.calibrate_goal_prob(over25_raw)
         
@@ -217,17 +223,14 @@ class OmniHybridBot:
             
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
-        # GCS Score
         xg_sum = lambda_h + lambda_a
+        xg_diff = abs(lambda_h - lambda_a)
         xg_score = min(1, max(0, (xg_sum - 1.8) / 1.8))
-        balance = max(0, 1 - (abs(lambda_h - lambda_a) / xg_sum)) if xg_sum > 0 else 0
+        balance = max(0, 1 - (xg_diff / xg_sum)) if xg_sum > 0 else 0
         gcs = (0.30 * xg_score + 0.20 * balance + 0.20 * abs(over25 - 0.5)*2 + 0.15 * (1-abs(btts-over25)) + 0.15 * min(1, abs(over25-implied_over)/0.12)) * 100
 
-        # --- SIMULACIÓN PARA LOS 7 MERCADOS ---
-        # 1. AH -1.5 (Gana por 2+)
         ah_h_minus = np.mean((h_sim - 1.5) > a_sim)
         ah_a_minus = np.mean((a_sim - 1.5) > h_sim)
-        # 2. AH +1.5 (Gana, Empata o Pierde por 1)
         ah_h_plus = np.mean((h_sim + 1.5) > a_sim)
         ah_a_plus = np.mean((a_sim + 1.5) > h_sim)
 
@@ -238,8 +241,9 @@ class OmniHybridBot:
             'goals': (over25, btts),
             'dc': (final_h + final_d, final_a + final_d),
             'dnb': (final_h/(final_h+final_a), final_a/(final_h+final_a)),
-            'ah': (ah_h_minus, ah_a_minus, ah_h_plus, ah_a_plus), # Datos para Handicap
-            'gcs': gcs
+            'ah': (ah_h_minus, ah_a_minus, ah_h_plus, ah_a_plus),
+            'gcs': gcs,
+            'cs': (correct_score_str, score_prob) # Datos nuevos
         }
 
     # --- MULTI-BOOKIE ---
@@ -278,16 +282,15 @@ class OmniHybridBot:
             add("GANA HOME", "1X2", sim['1x2'][0], odds['H'])
             add("GANA AWAY", "1X2", sim['1x2'][2], odds['A'])
             
-            # Cálculo de cuotas derivadas aproximadas
-            o_dnb_h = (odds['H'] * (1 - (1/odds['D']))) * 0.94
-            o_dnb_a = (odds['A'] * (1 - (1/odds['D']))) * 0.94
-            add("DNB HOME", "DNB", sim['dnb'][0], o_dnb_h)
-            add("DNB AWAY", "DNB", sim['dnb'][1], o_dnb_a)
+            odd_dnb_h = (odds['H'] * (1 - (1/odds['D']))) * 0.94
+            odd_dnb_a = (odds['A'] * (1 - (1/odds['D']))) * 0.94
+            add("DNB HOME", "DNB", sim['dnb'][0], odd_dnb_h)
+            add("DNB AWAY", "DNB", sim['dnb'][1], odd_dnb_a)
             
-            o_dc_1x = 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94
-            o_dc_x2 = 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94
-            add("DC 1X", "Double Chance", sim['dc'][0], o_dc_1x)
-            add("DC X2", "Double Chance", sim['dc'][1], o_dc_x2)
+            odd_dc_1x = 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94
+            odd_dc_x2 = 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94
+            add("DC 1X", "Double Chance", sim['dc'][0], odd_dc_1x)
+            add("DC X2", "Double Chance", sim['dc'][1], odd_dc_x2)
 
         if odds['O25'] > 0:
             o_u25 = 1 / (1 - (1/odds['O25'] * 1.05))
@@ -362,7 +365,7 @@ class OmniHybridBot:
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v67 FULL DASHBOARD: {today}", flush=True)
+        print(f"🚀 Iniciando v68 (Score Predictor): {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -380,7 +383,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Dashboard Completo)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Predictor v68)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -413,23 +416,22 @@ class OmniHybridBot:
                 form_h = self.get_team_form_icon(data['raw_df'], rh)
                 form_a = self.get_team_form_icon(data['raw_df'], ra)
                 
-                # DATA UNPACKING FOR X-RAY
                 ph, pd_raw, pa = sim['1x2']
                 dc1x, dcx2 = sim['dc']
                 dnb_h, dnb_a = sim['dnb']
                 btts = sim['goals'][1]
                 ov25 = sim['goals'][0]
-                ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah'] # Handicap data
+                ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
                 
                 h_stats, a_stats = sim['stats']
                 lambdas = sim['lambdas']
+                cs_str, cs_prob = sim['cs'] # Marcador exacto
                 
                 fair_odd_us = self.dec_to_am(1/best_bet['prob'])
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
-                # --- MENSAJE FINAL (CON LOS 7 MERCADOS) ---
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v67</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v68</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
@@ -448,7 +450,8 @@ class OmniHybridBot:
                     f"• Handi -1.5: H {ah_h_m15*100:.0f}% | A {ah_a_m15*100:.0f}%\n"
                     f"• Handi +1.5: H {ah_h_p15*100:.0f}% | A {ah_a_p15*100:.0f}%\n"
                     f"───────────────\n"
-                    f"⚔️ <b>PODER (Att / Def / Exp.Goals):</b>\n"
+                    f"🎯 Marcador Probable: <b>{cs_str}</b> ({cs_prob:.1f}%)\n"
+                    f"⚔️ PODER (Att / Def / Exp.Goals):\n"
                     f"🏠 {rh}: {h_stats['att']:.2f} / {h_stats['def']:.2f} => <b>{lambdas[0]:.2f}</b> gls\n"
                     f"✈️ {ra}: {a_stats['att']:.2f} / {a_stats['def']:.2f} => <b>{lambdas[1]:.2f}</b> gls"
                 )
