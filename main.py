@@ -10,16 +10,17 @@ import csv
 import json
 import re
 import math
+import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v76.0 (AGGRESSIVE VALUE & UNCENSORED AI) ---
+# --- CONFIGURACIÓN v76.1 (DEBUGGER MODE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:22" 
+RUN_TIME = "09:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -36,13 +37,16 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
-# Configuración de Gemini (SDK Nuevo)
+# --- DIAGNÓSTICO DE IMPORTACIÓN ---
+SDK_STATUS = "UNKNOWN"
 try:
     from google import genai
     from google.genai import types
     SDK_AVAILABLE = True
-except ImportError:
+    SDK_STATUS = "✅ LIBRERÍA 'google-genai' INSTALADA CORRECTAMENTE."
+except ImportError as ie:
     SDK_AVAILABLE = False
+    SDK_STATUS = f"❌ ERROR IMPORTACIÓN: {ie}. (Asegúrate de tener 'google-genai' en requirements.txt)"
 
 LEAGUE_CONFIG = {
     'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1, 'weight': 0.85},
@@ -61,19 +65,26 @@ class OmniHybridBot:
         self.fixtures = None
         self.history_cache = {} 
         self.daily_picks_buffer = [] 
-        self._check_creds()
+        
+        # INICIALIZACIÓN CON DIAGNÓSTICO
+        print("--- ENGINE v76.1 DEBUGGER STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO MODO DEBUG v76.1</b>\nEstado SDK: {SDK_STATUS}")
+        
         self._init_history_file()
         
         self.ai_client = None
         if SDK_AVAILABLE and GEMINI_API_KEY:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
-                print("🧠 Gemini SDK: INICIALIZADO (v2.0 Flash - Uncensored)", flush=True)
+                print("🧠 Gemini SDK: Cliente Creado.", flush=True)
+                # Test de conexión inmediato
+                self.test_gemini_connection()
             except Exception as e:
-                print(f"⚠️ Error Init Gemini: {e}", flush=True)
-
-    def _check_creds(self):
-        print("--- ENGINE v76.0 AGGRESSIVE VALUE STARTED ---", flush=True)
+                err = f"⚠️ Error al crear Cliente Gemini: {e}"
+                print(err, flush=True)
+                self.send_msg(err)
+        else:
+            if not GEMINI_API_KEY: self.send_msg("⚠️ ALERTA: No se detectó GEMINI_API_KEY.")
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -114,32 +125,27 @@ class OmniHybridBot:
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    # --- GEMINI LLM CALL (UNCENSORED) ---
-    def call_gemini(self, prompt):
-        if not SDK_AVAILABLE or not self.ai_client: return "❌ SDK no disponible."
+    # --- GEMINI DEBUGGER ---
+    def test_gemini_connection(self):
         try:
-            # Configuración para evitar bloqueos de contenido (Apuestas)
+            self.send_msg("🧪 <b>Probando conexión con Gemini...</b>")
+            response = self.call_gemini("Responde solo con la palabra 'CONECTADO'.")
+            self.send_msg(f"📡 Respuesta de Gemini: {response}")
+        except Exception as e:
+            self.send_msg(f"❌ FALLO TEST GEMINI: {str(e)}")
+
+    def call_gemini(self, prompt):
+        if not SDK_AVAILABLE or not self.ai_client: return "❌ ERROR: SDK no disponible o Cliente no inicializado."
+        try:
+            # Configuración de seguridad laxa (Sin Censura)
             config = types.GenerateContentConfig(
                 safety_settings=[
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HARASSMENT",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_HATE_SPEECH",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        threshold="BLOCK_NONE"
-                    ),
-                    types.SafetySetting(
-                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                        threshold="BLOCK_NONE"
-                    ),
+                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
+                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
                 ]
             )
-            
             r = self.ai_client.models.generate_content(
                 model="gemini-2.0-flash", 
                 contents=prompt,
@@ -147,8 +153,9 @@ class OmniHybridBot:
             )
             return r.text
         except Exception as e: 
+            error_trace = traceback.format_exc()
             print(f"❌ Error Gemini API: {e}")
-            return f"⚠️ Error de IA: {str(e)[:100]}"
+            return f"⚠️ CRASH GEMINI: {str(e)}\nTrace: {error_trace[:200]}"
 
     # --- CÁLCULO ---
     def calculate_team_stats(self, df, team):
@@ -305,7 +312,7 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- PROFIT HUNTER (SELECCIÓN AGRESIVA) ---
+    # --- SELECCIÓN AGRESIVA ---
     def find_best_value(self, sim, odds):
         candidates = []
         def add(name, market, prob, odd, gcs=None):
@@ -313,29 +320,23 @@ class OmniHybridBot:
             ev = (prob * odd) - 1
             status = "VALID"; reason = "OK"
             
-            # FILTRO 1: Calidad Básica
             if ev < MIN_EV_THRESHOLD: status="REJECTED"; reason=f"EV Bajo ({ev*100:.1f}%)"
             elif prob < 0.35: status="REJECTED"; reason=f"Riesgo ({prob*100:.0f}%)"
             elif ev > 0.45: status="REJECTED"; reason="Error Modelo"
-            
             if market == 'GOALS':
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
             
-            # FILTRO 2: ODIO AL HANDICAP BARATO
-            # Si es Handicap < 1.50, lo marcamos como BACKUP (No puede ser pick principal)
-            if market == "HANDI" and odd < 1.50:
-                status = "BACKUP" 
+            # FILTRO ANTI-HANDICAP BARATO
+            if market == "HANDI" and odd < 1.60:
+                status = "BACKUP"
                 reason = "Cuota Baja (Backup)"
             
             base_score = ev * (prob ** 1.5)
-            
-            # Bonus por Rango de Oro (1.70 - 2.50)
-            if 1.70 <= odd <= 2.50: base_score *= 1.3
+            if 1.70 <= odd <= 2.50: base_score *= 1.3 # Boost Profit Hunter
             
             candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': base_score, 'status': status, 'reason': reason})
 
-        # 1. Mercados Principales
         if odds['H'] > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], odds['H'])
             add("GANA AWAY", "1X2", sim['1x2'][2], odds['A'])
@@ -344,7 +345,6 @@ class OmniHybridBot:
             add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94)
             add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94)
 
-        # 2. Goles y BTTS
         if odds['O25'] > 0:
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], odds['O25'], sim['gcs'])
             add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], 1 / (1 - (1/odds['O25'] * 1.05)), sim['gcs'])
@@ -352,27 +352,20 @@ class OmniHybridBot:
             add("BTTS SÍ", "BTTS", sim['goals'][1], odds['BTTS_Y'])
             add("BTTS NO", "BTTS", 1-sim['goals'][1], 1 / (1 - (1/odds['BTTS_Y']*1.05)))
         
-        # 3. Handicaps (Para backups)
         ah_h_plus = sim['ah'][2]; ah_a_plus = sim['ah'][3]
         if ah_h_plus > 0.92: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
         if ah_a_plus > 0.92: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
 
         if not candidates: return None
-        
-        # Primero buscamos VALID (Principales)
         principales = [c for c in candidates if c['status'] == "VALID"]
         if principales:
             principales.sort(key=lambda x: x['score'], reverse=True)
             return principales[0]
-        
-        # Si no hay principales válidos, buscamos BACKUPS (Handicaps seguros)
         backups = [c for c in candidates if c['status'] == "BACKUP"]
         if backups:
-            # Solo si no hay nada mejor, damos el Handicap
             backups.sort(key=lambda x: x['ev'], reverse=True)
             return backups[0]
-            
-        return candidates[0] # Fallback (Rejected)
+        return candidates[0]
 
     def get_kelly_stake(self, prob, odds, market):
         if odds <= 1.0: return 0.0
@@ -423,24 +416,6 @@ class OmniHybridBot:
             elif "A +1.5" in pick and (ag+1.5)>hg: win=True
         return "WIN" if win else "LOSS"
 
-    def calculate_pnl(self):
-        if not os.path.exists(HISTORY_FILE): return
-        try:
-            df = pd.read_csv(HISTORY_FILE)
-            df['Profit'] = pd.to_numeric(df['Profit'], errors='coerce').fillna(0)
-            df['Stake'] = pd.to_numeric(df['Stake'], errors='coerce').fillna(0)
-            today_dt = datetime.now().strftime('%d/%m/%Y')
-            df_today = df[df['Date'] == today_dt]
-            df_wins = df[df['Status'] == 'WIN']
-            total_profit = df['Profit'].sum()
-            today_profit = df_today['Profit'].sum()
-            total_staked = df['Stake'].sum()
-            roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
-            win_rate = (len(df_wins) / len(df[df['Status'].isin(['WIN','LOSS'])])) * 100 if len(df[df['Status'].isin(['WIN','LOSS'])]) > 0 else 0
-            report = (f"💰 <b>REPORTE PnL (Profit & Loss)</b>\n📆 <b>Hoy:</b> {today_profit:+.2f} U\n📈 <b>Total:</b> {total_profit:+.2f} U\n📊 <b>ROI:</b> {roi:.1f}% | <b>WR:</b> {win_rate:.0f}%\n")
-            self.send_msg(report)
-        except Exception as e: print(f"Error PnL: {e}")
-
     def run_audit(self):
         print("🕵️‍♂️ Iniciando Auditoría Forense...", flush=True)
         if not os.path.exists(HISTORY_FILE): return
@@ -473,11 +448,12 @@ class OmniHybridBot:
             writer = csv.writer(f); writer.writerows(rows)
 
         if audit_buffer:
-            self.calculate_pnl()
             audit_text = "\n".join(audit_buffer)
             prompt = f"Eres el CONSULTOR SENIOR del fondo.\nRESULTADOS AYER:\n{audit_text}\n\nTAREA:\n1. Diagnóstico breve.\n2. MEJORA TÉCNICA: Ajustes de pesos.\n\nHTML:\n👨‍🏫 <b>CONSULTORÍA TÉCNICA</b>\n📑 <b>Diagnóstico:</b> ...\n🔧 <b>ORDEN DE INGENIERÍA:</b> ..."
-            ai_resp = self.call_gemini(prompt)
-            if ai_resp: self.send_msg(ai_resp)
+            try:
+                ai_resp = self.call_gemini(prompt)
+                self.send_msg(ai_resp)
+            except Exception as e: self.send_msg(f"Error Auditoria: {e}")
 
     # --- MAIN STRATEGY ---
     def generate_final_summary(self):
@@ -516,14 +492,18 @@ class OmniHybridBot:
         1. [Pick]
         2. [Pick]
         """
-        ai_resp = self.call_gemini(prompt)
-        if ai_resp: self.send_msg(ai_resp)
+        try:
+            ai_resp = self.call_gemini(prompt)
+            if ai_resp: self.send_msg(ai_resp)
+            else: self.send_msg("⚠️ ERROR: Gemini devolvió respuesta vacía.")
+        except Exception as e:
+            self.send_msg(f"⚠️ CRASH CRÍTICO EN GEMINI: {e}")
 
     def run_analysis(self):
         self.run_audit()
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v76.0 AGGRESSIVE VALUE: {today}", flush=True)
+        print(f"🚀 Iniciando v76.1 DEBUGGER MODE: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -541,7 +521,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Profit Hunter)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Debug Mode)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -560,7 +540,6 @@ class OmniHybridBot:
             
             if best_bet:
                 is_valid = best_bet['status'] == "VALID"
-                # Si el mejor pick es BACKUP (Handicap), lo mostramos como info pero NO como pick activo principal
                 is_backup = best_bet['status'] == "BACKUP"
                 
                 if is_valid:
@@ -569,8 +548,6 @@ class OmniHybridBot:
                     stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
                     stake_txt = f"{stake*100:.2f}%"
                 elif is_backup:
-                    # Lo mostramos como "NO BET (Seguro)" o como "PICK RESERVA"
-                    # Para tu gusto, mejor NO BET y que Gemini lo use en Parlay
                     icon = "🛡️"; status_line = "⚠️ <b>NO BET:</b> Cuota muy baja (Backup)"
                     stake = 0.0; stake_txt = "Skipped"
                 else:
@@ -587,7 +564,7 @@ class OmniHybridBot:
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v76</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v76.1</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
@@ -614,7 +591,7 @@ class OmniHybridBot:
                 )
                 self.send_msg(msg)
                 
-                # Guardamos en buffer tanto VALIDS como BACKUPS para que Gemini los use en Parlays
+                # Guardamos para Gemini
                 if is_valid or is_backup:
                     self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 
