@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v83.1 (GOD MODE + BUGFIX) ---
+# --- CONFIGURACIÓN v83.2 (HOTFIX KEYERROR) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "18:54" 
+RUN_TIME = "18:59" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -75,8 +75,8 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = [] 
         
-        print("--- ENGINE v83.1 FIXED STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v83.1</b>\n📂 CSV: {HISTORY_FILE}\nEstado SDK: {SDK_STATUS}")
+        print("--- ENGINE v83.2 HOTFIX STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v83.2</b>\n📂 CSV: {HISTORY_FILE}\nEstado SDK: {SDK_STATUS}")
         
         self._init_history_file()
         
@@ -127,7 +127,6 @@ class OmniHybridBot:
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    # --- RESTORED TEST FUNCTION ---
     def test_gemini_connection(self):
         try:
             response = self.call_gemini("Responde 'OK' si me lees.")
@@ -178,7 +177,6 @@ class OmniHybridBot:
                 elo_ratings[a_team] = a_elo + k_factor * (a_res - a_exp)
         return elo_ratings
 
-    # --- STATS HÍBRIDAS ---
     def calculate_team_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
@@ -230,7 +228,11 @@ class OmniHybridBot:
             else: avg_a = 1; avg_d = 1
             
             norm_stats = {t: {'att': s['att']/avg_a, 'def': s['def']/avg_d} for t, s in team_stats.items()}
-            return {'stats': norm_stats, 'elo': elo_map, 'teams': teams, 'raw_df': df, 'avg_g': avg_g}
+            
+            # --- FIX KEYERROR: AÑADIR PESO AL DICCIONARIO ---
+            league_weight = LEAGUE_CONFIG.get(div, {}).get('weight', 0.70)
+            
+            return {'stats': norm_stats, 'elo': elo_map, 'teams': teams, 'raw_df': df, 'avg_g': avg_g, 'weight': league_weight}
         except: return None
 
     # --- MOTOR MATEMÁTICO ---
@@ -277,11 +279,15 @@ class OmniHybridBot:
         
         prob_h, prob_d, prob_a = self.calculate_dixon_coles_1x2(lambda_h, lambda_a)
         
+        # --- FIX KEYERROR: RECUPERAR M_WEIGHT ---
+        m_weight = league_data.get('weight', 0.70)
+        
         if market_odds['H'] > 0:
             margin = 1.05 
             implied_h = (1 / market_odds['H']) / margin
             implied_a = (1 / market_odds['A']) / margin
             implied_d = (1 / market_odds['D']) / margin
+            # Weight: 70% Mercado / 30% Modelo
             raw_h = (implied_h * 0.7) + (prob_h * 0.3)
             raw_a = (implied_a * 0.7) + (prob_a * 0.3)
             raw_d = (implied_d * 0.7) + (prob_d * 0.3)
@@ -318,7 +324,8 @@ class OmniHybridBot:
             '1x2': (prob_h, prob_d, prob_a), 'goals': (over25, btts),
             'dc': (prob_h+prob_d, prob_a+prob_d), 'dnb': (prob_h/(prob_h+prob_a), prob_a/(prob_h+prob_a)),
             'ah': (ah_h_minus, ah_a_minus, ah_h_plus, ah_a_plus),
-            'gcs': gcs, 'cs': (cs_str, cs_prob), 'elo': (h_elo, a_elo)
+            'gcs': gcs, 'cs': (cs_str, cs_prob), 'elo': (h_elo, a_elo),
+            'm_weight': m_weight # <--- FIX AQUÍ
         }
 
     def get_avg_odds(self, row):
@@ -331,7 +338,7 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- SELECCIÓN ---
+    # --- SELECCIÓN GHOST MODE ---
     def find_best_value(self, sim, odds):
         candidates = []
         handicap_candidates = []
@@ -417,7 +424,7 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- AUDIT & PNL ---
+    # --- PNL & AUDITORÍA ---
     def check_bet_result(self, pick, market, fthg, ftag):
         if math.isnan(fthg): return "PENDING"
         hg = int(fthg); ag = int(ftag); win = False
@@ -472,6 +479,15 @@ class OmniHybridBot:
                 except: pass
         except: pass
 
+    def calculate_pnl(self):
+        if not os.path.exists(HISTORY_FILE): return
+        try:
+            df = pd.read_csv(HISTORY_FILE)
+            df['Profit'] = pd.to_numeric(df['Profit'], errors='coerce').fillna(0)
+            total = df['Profit'].sum()
+            self.send_msg(f"💰 <b>PnL TOTAL:</b> {total:+.2f} U")
+        except: pass
+
     # --- OUTPUT ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer and not self.handicap_buffer: return
@@ -506,10 +522,11 @@ class OmniHybridBot:
 
     def run_analysis(self):
         self.run_audit()
+        self.calculate_pnl()
         self.daily_picks_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v83.1 GOD MODE: {today}", flush=True)
+        print(f"🚀 Iniciando v83.2 HOTFIX: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -571,6 +588,7 @@ class OmniHybridBot:
                 
                 pick_icon_display = "🎯" if is_valid else "⚠️"
                 
+                # --- AQUÍ ESTABA EL ERROR: sim['m_weight'] YA EXISTE ---
                 msg = (
                     f"🛡️ <b>ANÁLISIS v83</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
@@ -599,7 +617,6 @@ class OmniHybridBot:
                 )
                 self.send_msg(msg)
                 
-                # Escribimos en el archivo PERSISTENTE
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
 
