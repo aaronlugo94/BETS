@@ -13,18 +13,20 @@ import math
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v71.0 (PARLAY ARCHITECT) ---
+# --- CONFIGURACIÓN v71.1 (PARLAY ARCHITECT FIXED) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "03:47" 
+RUN_TIME = "03:52" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
-MIN_EV_THRESHOLD = 0.02     
+MIN_EV_THRESHOLD = 0.02
+SEASON = '2526'  # <--- RESTAURADO
+HISTORY_FILE = "historial_omni_hybrid.csv" # <--- RESTAURADO
 
 # GESTIÓN DE RIESGO
 KELLY_FRACTION = 0.20       
@@ -69,7 +71,7 @@ class OmniHybridBot:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v71 PARLAY ARCHITECT STARTED ---", flush=True)
+        print("--- ENGINE v71.1 STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -341,7 +343,7 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- RESUMEN FINAL + PARLAYS ---
+    # --- RESUMEN FINAL ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
@@ -384,7 +386,7 @@ class OmniHybridBot:
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v71 PARLAY ARCHITECT: {today}", flush=True)
+        print(f"🚀 Iniciando v71.1 PARLAY ARCHITECT: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -402,7 +404,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Parlay Generator v71)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Parlay Generator v71.1)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -447,7 +449,7 @@ class OmniHybridBot:
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v71</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v71.1</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
