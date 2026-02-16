@@ -11,17 +11,17 @@ import json
 import re
 import math
 import traceback
-import random # Para simulación de lineups (reemplazar con API real)
+import random 
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v81.0 (PERSISTENCE & SMART MATH) ---
+# --- CONFIGURACIÓN v81.1 (CRASH FIX) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "17:50" 
+RUN_TIME = "18:25" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -30,8 +30,9 @@ MIN_EV_THRESHOLD = 0.02
 SEASON = '2526'
 
 # --- 💾 PERSISTENCIA RAILWAY ---
-# Si existe la carpeta del volumen, guardamos ahí. Si no, local.
-VOLUME_PATH = "/app/data"
+# Railway Volumes monta una carpeta especial. 
+# Si la encuentras, guardamos ahí. Si no, usamos memoria temporal.
+VOLUME_PATH = "/app/data" 
 if os.path.exists(VOLUME_PATH):
     HISTORY_FILE = os.path.join(VOLUME_PATH, "historial_omni_v81.csv")
     print(f"💾 USANDO VOLUMEN PERSISTENTE: {HISTORY_FILE}", flush=True)
@@ -77,8 +78,8 @@ class OmniHybridBot:
         self.daily_picks_buffer = [] 
         self.handicap_buffer = [] 
         
-        print("--- ENGINE v81.0 SMART MATH STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v81.0</b>\n📂 Historial: {HISTORY_FILE}\nEstado SDK: {SDK_STATUS}")
+        print("--- ENGINE v81.1 FIXED STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v81.1</b>\n📂 Ruta CSV: {HISTORY_FILE}\nEstado SDK: {SDK_STATUS}")
         
         self._init_history_file()
         
@@ -91,10 +92,14 @@ class OmniHybridBot:
                 self.send_msg(f"⚠️ Error Cliente Gemini: {e}")
 
     def _init_history_file(self):
+        # Crea el archivo si no existe, respetando la ruta del volumen
         if not os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Status', 'Stake', 'Profit', 'FTHG', 'FTAG'])
+            try:
+                with open(HISTORY_FILE, mode='w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['Date', 'League', 'Home', 'Away', 'Pick', 'Market', 'Prob', 'Odd', 'EV', 'Status', 'Stake', 'Profit', 'FTHG', 'FTAG'])
+            except Exception as e:
+                print(f"⚠️ Error creando CSV en {HISTORY_FILE}: {e}")
 
     def sanitize_for_telegram(self, text):
         text = text.replace("```html", "").replace("```", "")
@@ -131,53 +136,34 @@ class OmniHybridBot:
             return r.text if r.text else "⚠️ IA sin respuesta."
         except Exception as e: return f"❌ Error Gemini: {str(e)[:100]}"
 
-    # --- MÓDULO MATEMÁTICO AVANZADO (AJUSTE POR RIVAL) ---
-    
+    # --- CÁLCULO DE FUERZA DEFENSA (NUEVO) ---
     def calculate_defense_strength_map(self, df):
-        # Fase 1: Calcular fuerza defensiva base de todos los equipos
-        # (Goles recibidos vs Promedio Liga)
         teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
         avg_goals_league = (df['FTHG'].mean() + df['FTAG'].mean()) / 2
-        
         def_map = {}
         for t in teams:
             matches = df[(df['HomeTeam'] == t) | (df['AwayTeam'] == t)]
             if len(matches) < 3: 
                 def_map[t] = 1.0
                 continue
-                
             conceded = 0
             for _, r in matches.iterrows():
                 if r['HomeTeam'] == t: conceded += r['FTAG']
                 else: conceded += r['FTHG']
-            
             avg_conceded = conceded / len(matches)
-            # Def Strength: Si recibes 0.5 y la liga es 1.5 => Strength 0.33 (Muy fuerte)
-            # Invertimos para que sea multiplicador de dificultad:
-            # Si recibes poco, el multiplicador debe ser bajo (difícil anotar)
             strength = avg_conceded / avg_goals_league
             def_map[t] = strength
-            
         return def_map
 
     def calculate_team_stats_weighted(self, df, team, def_map):
-        # Fase 2: Calcular ataque ajustado por la defensa del rival
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
-        
         w_att = 0; w_def = 0; total_w = 0
-        
         for i, (_, row) in enumerate(matches.iterrows()):
             time_weight = pow(DECAY_ALPHA, 5 - i)
             total_w += time_weight
-            
             opponent = row['AwayTeam'] if row['HomeTeam'] == team else row['HomeTeam']
             opp_def_strength = def_map.get(opponent, 1.0)
-            
-            # FACTOR DE AJUSTE POR RIVAL
-            # Si le metí 2 goles al Real Madrid (Def 0.6), valen más que 2 al Almería (Def 1.8)
-            # Adjusted Goal = Real Goal * (1 / Opponent_Def_Strength)
-            # Limitamos el multiplicador para no locuras (entre 0.7 y 1.5)
             difficulty_mult = max(0.7, min(1.5, 1 / opp_def_strength if opp_def_strength > 0 else 1.5))
             
             if row['HomeTeam'] == team:
@@ -186,12 +172,10 @@ class OmniHybridBot:
             else:
                 raw_goals = (row['FTAG'] * 0.6) + ((row.get('AST', row['FTAG']*3)/3) * 0.4)
                 raw_conc = (row['FTHG'] * 0.6) + ((row.get('HST', row['FTHG']*3)/3) * 0.4)
-                
-            # Aplicamos ajuste
-            adjusted_att = raw_goals * difficulty_mult
             
+            adjusted_att = raw_goals * difficulty_mult
             w_att += adjusted_att * time_weight
-            w_def += raw_conc * time_weight # Defensa se deja igual por ahora
+            w_def += raw_conc * time_weight
             
         return w_att / total_w, w_def / total_w
 
@@ -203,14 +187,10 @@ class OmniHybridBot:
             df = pd.read_csv(io.StringIO(r.content.decode('utf-8-sig')))
             df = df.dropna(subset=['HomeTeam', 'AwayTeam'])
             matches_played = df.dropna(subset=['FTHG', 'FTAG'])
-            
             avg_g = matches_played.FTHG.mean() + matches_played.FTAG.mean() if not matches_played.empty else 2.5
             teams = pd.concat([df['HomeTeam'], df['AwayTeam']]).unique()
             
-            # 1. Mapa de defensas primero
             def_map = self.calculate_defense_strength_map(matches_played)
-            
-            # 2. Stats ajustadas
             team_stats = {}
             for t in teams:
                 a, d = self.calculate_team_stats_weighted(matches_played, t, def_map)
@@ -218,39 +198,23 @@ class OmniHybridBot:
             
             avg_att = sum(s['att'] for s in team_stats.values()) / len(team_stats)
             avg_def = sum(s['def'] for s in team_stats.values()) / len(team_stats)
-            
             norm_stats = {t: {'att': s['att']/avg_att, 'def': s['def']/avg_def} for t, s in team_stats.items()}
             return {'stats': norm_stats, 'teams': teams, 'raw_df': df, 'avg_g': avg_g}
         except: return None
 
-    # --- FILTRO DE ALINEACIONES (SIMULADO) ---
+    # --- FILTRO ALINEACIONES ---
     def check_lineups_penalty(self, home, away):
-        """
-        NOTA: Para hacer esto REAL, necesitas una API Key de API-Football o similar.
-        Como football-data.co.uk no tiene alineaciones, aquí SIMULAMOS la lógica.
-        Si quieres conectarlo real, reemplaza el random por la llamada a tu API.
-        """
-        home_penalty = 1.0
-        away_penalty = 1.0
-        alert = ""
-        
-        # --- SIMULACIÓN (Quitar esto cuando tengas API Key) ---
-        # 5% de chance de que falte una estrella
+        # SIMULACIÓN (Reemplazar con API real)
+        home_penalty = 1.0; away_penalty = 1.0; alert = ""
         if random.random() < 0.05:
-            home_penalty = 0.85 # -15% ataque
-            alert += f"🚨 {home}: Baja Clave (Simulada)\n"
+            home_penalty = 0.85; alert += f"🚨 {home}: Baja Clave (Sim)\n"
         if random.random() < 0.05:
-            away_penalty = 0.85
-            alert += f"🚨 {away}: Baja Clave (Simulada)\n"
-        # -----------------------------------------------------
-        
+            away_penalty = 0.85; alert += f"🚨 {away}: Baja Clave (Sim)\n"
         return home_penalty, away_penalty, alert
 
     def simulate_match(self, home, away, league_data, market_odds):
         h_st = league_data['stats'].get(home, {'att':1.0, 'def':1.0})
         a_st = league_data['stats'].get(away, {'att':1.0, 'def':1.0})
-        
-        # APLICAR PENALIZACIÓN DE ALINEACIONES
         h_pen, a_pen, lineup_alert = self.check_lineups_penalty(home, away)
         
         avg_g = league_data['avg_g'] / 2
@@ -272,11 +236,35 @@ class OmniHybridBot:
             'gcs': gcs, 'cs': most_common, 'lambdas': (lambda_h, lambda_a), 'lineup_alert': lineup_alert
         }
 
-    # --- MOTOR MATEMÁTICO ---
-    def poisson_prob(self, k, lamb): return (math.pow(lamb, k) * math.exp(-lamb)) / math.factorial(k)
-    def calculate_dixon_coles_1x2(self, lambda_h, lambda_a): return 0.33, 0.33, 0.33 # Placeholder simplificado para focus en logica
+    # --- RESTAURADO: STAKE & FORM ICON ---
+    def get_kelly_stake(self, prob, odds, market):
+        if odds <= 1.0: return 0.0
+        q = 1 - prob
+        b = odds - 1
+        full_kelly = (b * prob - q) / b
+        stake = full_kelly * KELLY_FRACTION
+        # Reducción extra para mercados volátiles
+        if market in ['GOALS', 'BTTS']: stake *= 0.70
+        return max(0.0, min(stake, MAX_STAKE_PCT))
 
-    # --- SELECTOR DE VALOR ---
+    def get_team_form_icon(self, df, team):
+        # Calcula la racha visual (🔥/🧊)
+        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
+        if len(matches) == 0: return "➡️"
+        points = 0; possible = len(matches) * 3
+        for _, row in matches.iterrows():
+            if row['HomeTeam'] == team:
+                if row['FTHG'] > row['FTAG']: points += 3
+                elif row['FTHG'] == row['FTAG']: points += 1
+            else:
+                if row['FTAG'] > row['FTHG']: points += 3
+                elif row['FTAG'] == row['FTHG']: points += 1
+        pct = points / possible if possible > 0 else 0
+        if pct >= 0.7: return "🔥"
+        if pct <= 0.3: return "🧊"
+        return "➡️"
+
+    # --- SELECCIÓN ---
     def find_best_value(self, sim, odds):
         candidates = []
         best_handi = None
@@ -311,7 +299,7 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['ev'], reverse=True)
         return {**candidates[0], 'status': 'GHOST'}, best_handi
 
-    # --- PnL & AUDITORÍA ---
+    # --- AUDIT & PnL ---
     def check_bet_result(self, pick, market, fthg, ftag):
         if math.isnan(fthg): return "PENDING"
         hg = int(fthg); ag = int(ftag); win = False
@@ -334,28 +322,30 @@ class OmniHybridBot:
         for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
         
         rows = []; audit_buffer = []
-        with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f); header = next(reader); rows.append(header)
-            for row in reader:
-                status = row[9]
-                if status in ['VALID', '0'] and row[1] in league_data_map:
-                    div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]; odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
-                    data = league_data_map.get(div)
-                    if data and not data['raw_df'].empty:
-                        match = data['raw_df'][(data['raw_df']['HomeTeam']==home) & (data['raw_df']['AwayTeam']==away)]
-                        if not match.empty:
-                            fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
-                            res = self.check_bet_result(pick, market, fthg, ftag)
-                            if res in ["WIN", "LOSS", "PUSH"]:
-                                row[9] = res; row[12] = fthg; row[13] = ftag
-                                if res == "WIN": row[11] = round((stake * odd) - stake, 2)
-                                elif res == "LOSS": row[11] = round(-stake, 2)
-                                audit_buffer.append(f"{pick}: {res}")
-                rows.append(row)
-        with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f); writer.writerows(rows)
-        
-        if audit_buffer: self.send_msg(f"🔬 <b>AUDITORÍA:</b>\n" + "\n".join(audit_buffer))
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f); header = next(reader); rows.append(header)
+                for row in reader:
+                    status = row[9]
+                    if status in ['VALID', '0'] and row[1] in league_data_map:
+                        div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]; odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
+                        data = league_data_map.get(div)
+                        if data and not data['raw_df'].empty:
+                            match = data['raw_df'][(data['raw_df']['HomeTeam']==home) & (data['raw_df']['AwayTeam']==away)]
+                            if not match.empty:
+                                fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
+                                res = self.check_bet_result(pick, market, fthg, ftag)
+                                if res in ["WIN", "LOSS", "PUSH"]:
+                                    row[9] = res; row[12] = fthg; row[13] = ftag
+                                    if res == "WIN": row[11] = round((stake * odd) - stake, 2)
+                                    elif res == "LOSS": row[11] = round(-stake, 2)
+                                    audit_buffer.append(f"{pick}: {res}")
+                    rows.append(row)
+            with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f); writer.writerows(rows)
+            
+            if audit_buffer: self.send_msg(f"🔬 <b>AUDITORÍA:</b>\n" + "\n".join(audit_buffer))
+        except Exception as e: print(f"Audit error: {e}")
 
     def calculate_pnl(self):
         if not os.path.exists(HISTORY_FILE): return
@@ -366,7 +356,6 @@ class OmniHybridBot:
             self.send_msg(f"💰 <b>PnL TOTAL:</b> {total:+.2f} U")
         except: pass
 
-    # --- EXEC ---
     def run_analysis(self):
         self.run_audit()
         self.calculate_pnl()
@@ -378,7 +367,7 @@ class OmniHybridBot:
             daily = df[df['Date'] == pd.to_datetime(today, dayfirst=True)]
         except: return
 
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (v81.0)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (v81.1)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -396,12 +385,14 @@ class OmniHybridBot:
             pick, h_pick = self.find_best_value(sim, m_odds)
             
             if pick:
-                status_txt = "✅ <b>PICK ACTIVO</b>" if pick['status'] == "VALID" else f"🚫 <b>NO BET</b> (Riesgo)"
+                status_txt = "✅ <b>PICK ACTIVO</b>" if pick['status'] == "VALID" else f"🚫 <b>NO BET</b>"
                 stake = self.get_kelly_stake(pick['prob'], pick['odd'], pick['market']) if pick['status'] == "VALID" else 0.0
                 lineup_txt = sim.get('lineup_alert', '')
+                form_h = self.get_team_form_icon(data['raw_df'], rh)
+                form_a = self.get_team_form_icon(data['raw_df'], ra)
                 
                 msg = (f"🛡️ <b>ANÁLISIS</b> | {LEAGUE_CONFIG[div]['name']}\n"
-                       f"⚽ {rh} vs {ra}\n{lineup_txt}"
+                       f"⚽ {rh} {form_h} vs {form_a} {ra}\n{lineup_txt}"
                        f"───────────────\n"
                        f"{status_txt}\n"
                        f"🎯 PICK: <b>{pick['pick']}</b>\n"
