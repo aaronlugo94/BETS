@@ -13,26 +13,22 @@ import math
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v69.0 (DIXON-COLES & DYNAMIC WEIGHTS) ---
+# --- CONFIGURACIÓN v71.0 (PARLAY ARCHITECT) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "03:13" 
+RUN_TIME = "03:47" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
-WEIGHT_MODEL_DEFAULT = 0.30 # Fallback
-
-SEASON = '2526'       
-HISTORY_FILE = "historial_omni_hybrid.csv"
+MIN_EV_THRESHOLD = 0.02     
 
 # GESTIÓN DE RIESGO
 KELLY_FRACTION = 0.20       
 MAX_STAKE_PCT = 0.04        
-MIN_EV_THRESHOLD = 0.02     
 
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -44,10 +40,6 @@ try:
 except ImportError:
     SDK_AVAILABLE = False
 
-# --- CONFIGURACIÓN DE LIGAS CON PESOS DINÁMICOS ---
-# weight: Cuánto confiamos en el MERCADO (0.0 a 1.0)
-# Ligas eficientes (E0, SP1) -> Alto peso al mercado (0.85)
-# Ligas volátiles (T1, B1) -> Menor peso al mercado (0.60), más al modelo
 LEAGUE_CONFIG = {
     'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1, 'weight': 0.85},
     'SP1': {'name': '🇪🇸 LA LIGA', 'tier': 1, 'weight': 0.85},
@@ -77,7 +69,7 @@ class OmniHybridBot:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v69 DIXON-COLES STARTED ---", flush=True)
+        print("--- ENGINE v71 PARLAY ARCHITECT STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -125,7 +117,7 @@ class OmniHybridBot:
             return r.text
         except Exception as e: return f"❌ Error Gemini: {str(e)[:100]}"
 
-    # --- CÁLCULO ATAQUE Y DEFENSA ---
+    # --- CÁLCULO ---
     def calculate_team_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
@@ -164,7 +156,6 @@ class OmniHybridBot:
             avg_att /= cnt; avg_def /= cnt
             
             norm_stats = {t: {'att': s['att']/avg_att, 'def': s['def']/avg_def} for t, s in team_stats.items()}
-            # Guardamos también el peso del mercado para esta liga
             league_weight = LEAGUE_CONFIG.get(div, {}).get('weight', 0.70)
             self.history_cache[div] = {'stats': norm_stats, 'teams': teams, 'raw_df': df, 'avg_g': avg_g, 'market_weight': league_weight}
             return self.history_cache[div]
@@ -175,29 +166,20 @@ class OmniHybridBot:
         return (math.pow(lamb, k) * math.exp(-lamb)) / math.factorial(k)
 
     def calculate_dixon_coles_1x2(self, lambda_h, lambda_a):
-        # Ajuste Rho para corregir la subestimación de empates
         rho = -0.13 
         prob_h, prob_d, prob_a = 0.0, 0.0, 0.0
-        
-        # Iteramos hasta 6 goles (suficiente precisión)
         for x in range(7):
             for y in range(7):
                 p = self.poisson_prob(x, lambda_h) * self.poisson_prob(y, lambda_a)
-                
-                # Factor de corrección Dixon-Coles para marcadores bajos
                 correction = 1.0
-                if x == 0 and y == 0: correction = 1 - (lambda_h * lambda_a * rho)
-                elif x == 0 and y == 1: correction = 1 + (lambda_h * rho)
-                elif x == 1 and y == 0: correction = 1 + (lambda_a * rho)
-                elif x == 1 and y == 1: correction = 1 - (rho)
-                
+                if x==0 and y==0: correction = 1 - (lambda_h * lambda_a * rho)
+                elif x==0 and y==1: correction = 1 + (lambda_h * rho)
+                elif x==1 and y==0: correction = 1 + (lambda_a * rho)
+                elif x==1 and y==1: correction = 1 - (rho)
                 final_p = p * correction
-                
                 if x > y: prob_h += final_p
                 elif x == y: prob_d += final_p
                 else: prob_a += final_p
-                
-        # Renormalizar por si acaso
         total = prob_h + prob_d + prob_a
         return prob_h/total, prob_d/total, prob_a/total
 
@@ -207,7 +189,7 @@ class OmniHybridBot:
     def simulate_match(self, home, away, league_data, market_odds):
         stats = league_data['stats']
         avg_g = league_data['avg_g'] / 2
-        m_weight = league_data.get('market_weight', 0.70) # Peso dinámico
+        m_weight = league_data.get('market_weight', 0.70)
         model_weight = 1.0 - m_weight
         
         h_st = stats.get(home, {'att':1.0, 'def':1.0})
@@ -216,14 +198,11 @@ class OmniHybridBot:
         lambda_h = min(3.5, h_st['att'] * a_st['def'] * avg_g * 1.20)
         lambda_a = min(3.5, a_st['att'] * h_st['def'] * avg_g)
         
-        # 1. Probabilidades MODELO (Usando Dixon-Coles analítico, más preciso)
         model_h, model_d, model_a = self.calculate_dixon_coles_1x2(lambda_h, lambda_a)
         
-        # 2. Simulacion Monte Carlo (Para Handicaps y Goles complejos)
         h_sim = np.random.poisson(lambda_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(lambda_a, SIMULATION_RUNS)
         
-        # 3. FUSIÓN DINÁMICA
         if market_odds['H'] > 0:
             margin = 1.05 
             implied_h = (1 / market_odds['H']) / margin
@@ -239,7 +218,6 @@ class OmniHybridBot:
         else:
             final_h, final_d, final_a = model_h, model_d, model_a
 
-        # Goles
         over25_raw = np.mean((h_sim + a_sim) > 2.5)
         over25 = self.calibrate_goal_prob(over25_raw)
         
@@ -253,14 +231,12 @@ class OmniHybridBot:
             
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
-        # GCS Score
         xg_sum = lambda_h + lambda_a
         xg_diff = abs(lambda_h - lambda_a)
         xg_score = min(1, max(0, (xg_sum - 1.8) / 1.8))
         balance = max(0, 1 - (xg_diff / xg_sum)) if xg_sum > 0 else 0
         gcs = (0.30 * xg_score + 0.20 * balance + 0.20 * abs(over25 - 0.5)*2 + 0.15 * (1-abs(btts-over25)) + 0.15 * min(1, abs(over25-implied_over)/0.12)) * 100
 
-        # Marcador Probable
         sim_scores = list(zip(h_sim, a_sim))
         most_common, count = Counter(sim_scores).most_common(1)[0]
         cs_str = f"{most_common[0]}-{most_common[1]}"
@@ -272,10 +248,8 @@ class OmniHybridBot:
         ah_a_plus = np.mean((a_sim + 1.5) > h_sim)
 
         return {
-            'lambdas': (lambda_h, lambda_a),
-            'stats': (h_st, a_st),
-            '1x2': (final_h, final_d, final_a),
-            'goals': (over25, btts),
+            'lambdas': (lambda_h, lambda_a), 'stats': (h_st, a_st),
+            '1x2': (final_h, final_d, final_a), 'goals': (over25, btts),
             'dc': (final_h + final_d, final_a + final_d),
             'dnb': (final_h/(final_h+final_a), final_a/(final_h+final_a)),
             'ah': (ah_h_minus, ah_a_minus, ah_h_plus, ah_a_plus),
@@ -287,51 +261,52 @@ class OmniHybridBot:
         def get_avg(cols):
             vals = [float(row[c]) for c in cols if row.get(c) and str(row[c]).replace('.','').isdigit()]
             return sum(vals)/len(vals) if vals else 0.0
+        
+        btts_yes = get_avg(['BbAvBBTS', 'B365BTTSY'])
+        
         return {
             'H': get_avg(['B365H', 'PSH', 'WHH']),
             'D': get_avg(['B365D', 'PSD', 'WHD']),
             'A': get_avg(['B365A', 'PSA', 'WHA']),
-            'O25': get_avg(['B365>2.5', 'P>2.5', 'WH>2.5'])
+            'O25': get_avg(['B365>2.5', 'P>2.5', 'WH>2.5']),
+            'BTTS_Y': btts_yes
         }
 
     # --- SELECCIÓN ---
     def find_best_value(self, sim, odds):
         candidates = []
-        
         def add(name, market, prob, odd, gcs=None):
             if odd < 1.05: return
             ev = (prob * odd) - 1
             status = "VALID"; reason = "OK"
-            
             if ev < MIN_EV_THRESHOLD: status="REJECTED"; reason=f"EV Bajo ({ev*100:.1f}%)"
             elif prob < 0.35: status="REJECTED"; reason=f"Riesgo ({prob*100:.0f}%)"
             elif ev > 0.45: status="REJECTED"; reason="Error Modelo"
-            
             if market == 'GOALS':
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
-
             score = ev * (prob ** 1.5)
             candidates.append({'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': ev, 'score': score, 'status': status, 'reason': reason})
 
         if odds['H'] > 0:
             add("GANA HOME", "1X2", sim['1x2'][0], odds['H'])
             add("GANA AWAY", "1X2", sim['1x2'][2], odds['A'])
-            
-            odd_dnb_h = (odds['H'] * (1 - (1/odds['D']))) * 0.94
-            odd_dnb_a = (odds['A'] * (1 - (1/odds['D']))) * 0.94
-            add("DNB HOME", "DNB", sim['dnb'][0], odd_dnb_h)
-            add("DNB AWAY", "DNB", sim['dnb'][1], odd_dnb_a)
-            
-            odd_dc_1x = 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94
-            odd_dc_x2 = 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94
-            add("DC 1X", "Double Chance", sim['dc'][0], odd_dc_1x)
-            add("DC X2", "Double Chance", sim['dc'][1], odd_dc_x2)
+            add("DNB HOME", "DNB", sim['dnb'][0], (odds['H'] * (1 - (1/odds['D']))) * 0.94)
+            add("DNB AWAY", "DNB", sim['dnb'][1], (odds['A'] * (1 - (1/odds['D']))) * 0.94)
+            add("DC 1X", "Double Chance", sim['dc'][0], 1 / ((1/odds['H']) + (1/odds['D'])) * 0.94)
+            add("DC X2", "Double Chance", sim['dc'][1], 1 / ((1/odds['A']) + (1/odds['D'])) * 0.94)
 
         if odds['O25'] > 0:
-            o_u25 = 1 / (1 - (1/odds['O25'] * 1.05))
             add("OVER 2.5 GOLES", "GOALS", sim['goals'][0], odds['O25'], sim['gcs'])
-            add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], o_u25, sim['gcs'])
+            add("UNDER 2.5 GOLES", "GOALS", 1-sim['goals'][0], 1 / (1 - (1/odds['O25'] * 1.05)), sim['gcs'])
+
+        if odds['BTTS_Y'] > 0:
+            add("BTTS SÍ", "BTTS", sim['goals'][1], odds['BTTS_Y'])
+            add("BTTS NO", "BTTS", 1-sim['goals'][1], 1 / (1 - (1/odds['BTTS_Y']*1.05)))
+        
+        ah_h_plus = sim['ah'][2]; ah_a_plus = sim['ah'][3]
+        if ah_h_plus > 0.88: add("HANDICAP H +1.5", "HANDI", ah_h_plus, 1.15)
+        if ah_a_plus > 0.88: add("HANDICAP A +1.5", "HANDI", ah_a_plus, 1.15)
 
         if not candidates: return None
         validos = [c for c in candidates if c['status'] == "VALID"]
@@ -366,39 +341,50 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
+    # --- RESUMEN FINAL + PARLAYS ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
-        self.send_msg("⏳ <b>El Jefe de Estrategia está auditando la cartera...</b>")
+        self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
-        Eres el JEFE DE ESTRATEGIA de un tipster cuantitativo.
+        Eres el JEFE DE ESTRATEGIA de un fondo de inversión deportiva.
         
-        DATOS (Picks procesados):
+        DATOS (Picks procesados hoy):
         ===
         {picks_text}
         ===
 
         TAREAS:
-        1. Filtra los "NO BET".
-        2. De los ACTIVOS, selecciona LA JOYA y EL BANKER.
-        3. Comenta la estrategia.
+        1. Audita los picks y elimina los "NO BET" de tu análisis.
+        2. Elige "LA JOYA" (Máximo Valor) y "EL BANKER" (Máxima Seguridad).
+        3. 🎲 CONSTRUYE 2 PARLAYS (COMBINADAS):
+           - PARLAY SEGURO: Combina 2 o 3 picks muy sólidos (Bankers/Handicaps) para buscar cuota total ~2.00.
+           - PARLAY DE VALOR: Combina 2 picks de alto EV (Joyas) para buscar un golpe de suerte (Cuota ~4.00+).
         
-        FORMATO HTML (Sin Markdown):
+        FORMATO HTML (Limpio):
         🧠 <b>DICTAMEN FINAL</b>
-        💎 <b>LA JOYA:</b> [Selección]
-        🛡️ <b>EL BANKER:</b> [Selección]
-        ✅ <b>LISTA DE VALOR:</b> [Breve lista]
-        📊 <b>ESTRATEGIA:</b> [Consejo]
-        """
         
+        💎 <b>LA JOYA:</b> [Pick]
+        🛡️ <b>EL BANKER:</b> [Pick]
+        
+        🎲 <b>PARLAY SEGURO (x2.xx):</b>
+        1. [Pick 1]
+        2. [Pick 2]
+        
+        🚀 <b>PARLAY DE VALOR (x?.??):</b>
+        1. [Pick 1]
+        2. [Pick 2]
+        
+        📊 <b>CONSEJO:</b> [Breve]
+        """
         ai_resp = self.call_gemini(prompt)
         if ai_resp: self.send_msg(ai_resp)
 
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v69 DIXON-COLES: {today}", flush=True)
+        print(f"🚀 Iniciando v71 PARLAY ARCHITECT: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -416,7 +402,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Dixon-Coles + Weights)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Parlay Generator v71)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -461,7 +447,7 @@ class OmniHybridBot:
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v69</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v71</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
