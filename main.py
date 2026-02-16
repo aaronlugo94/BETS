@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:23" 
+RUN_TIME = "05:31" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -485,12 +485,9 @@ class OmniHybridBot:
         Genera un reporte breve con:
         1. 💎 LA JOYA: (El mejor pick oficial).
         2. 🛡️ EL BANKER: (El pick más seguro).
-        3. ✅ PICKS ACTIVOS (LOS PICKS QUE ESTAN ✅)
-        4. 🎲 PARLAY SEGURO: (3-5 picks seguros).
-        5. 🚀 PARLAY DE VALOR: (2-3 joyas).
-
-        TU ANALISIS EXPERTO
-                
+        3. 🎲 PARLAY SEGURO: (2 picks seguros).
+        4. 🚀 PARLAY DE VALOR: (2 joyas).
+        
         USA SOLO negritas <b> y saltos de linea. NO uses Markdown (**).
         """
         
