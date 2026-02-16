@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v76.1 (DEBUGGER MODE) ---
+# --- CONFIGURACIÓN v77.0 (ROBUST SUMMARY & HANDICAP JAIL) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:36" 
+RUN_TIME = "04:42" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
@@ -43,10 +43,10 @@ try:
     from google import genai
     from google.genai import types
     SDK_AVAILABLE = True
-    SDK_STATUS = "✅ LIBRERÍA 'google-genai' INSTALADA CORRECTAMENTE."
+    SDK_STATUS = "✅ LIBRERÍA 'google-genai' INSTALADA."
 except ImportError as ie:
     SDK_AVAILABLE = False
-    SDK_STATUS = f"❌ ERROR IMPORTACIÓN: {ie}. (Asegúrate de tener 'google-genai' en requirements.txt)"
+    SDK_STATUS = f"❌ ERROR IMPORTACIÓN: {ie}"
 
 LEAGUE_CONFIG = {
     'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1, 'weight': 0.85},
@@ -66,9 +66,8 @@ class OmniHybridBot:
         self.history_cache = {} 
         self.daily_picks_buffer = [] 
         
-        # INICIALIZACIÓN CON DIAGNÓSTICO
-        print("--- ENGINE v76.1 DEBUGGER STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO MODO DEBUG v76.1</b>\nEstado SDK: {SDK_STATUS}")
+        print("--- ENGINE v77.0 ROBUST STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v77.0</b>\nEstado SDK: {SDK_STATUS}")
         
         self._init_history_file()
         
@@ -77,14 +76,9 @@ class OmniHybridBot:
             try:
                 self.ai_client = genai.Client(api_key=GEMINI_API_KEY)
                 print("🧠 Gemini SDK: Cliente Creado.", flush=True)
-                # Test de conexión inmediato
                 self.test_gemini_connection()
             except Exception as e:
-                err = f"⚠️ Error al crear Cliente Gemini: {e}"
-                print(err, flush=True)
-                self.send_msg(err)
-        else:
-            if not GEMINI_API_KEY: self.send_msg("⚠️ ALERTA: No se detectó GEMINI_API_KEY.")
+                self.send_msg(f"⚠️ Error Cliente Gemini: {e}")
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -125,37 +119,44 @@ class OmniHybridBot:
         if decimal_odd >= 2.00: return f"+{int((decimal_odd - 1) * 100)}"
         else: return f"{int(-100 / (decimal_odd - 1))}"
 
-    # --- GEMINI DEBUGGER ---
+    # --- GEMINI ROBUST CALL ---
     def test_gemini_connection(self):
         try:
-            self.send_msg("🧪 <b>Probando conexión con Gemini...</b>")
-            response = self.call_gemini("Responde solo con la palabra 'CONECTADO'.")
-            self.send_msg(f"📡 Respuesta de Gemini: {response}")
+            # self.send_msg("🧪 Testeando cerebro IA...") # Opcional: comentar para no spamear
+            response = self.call_gemini("Responde 'OK' si me lees.")
+            if "OK" in response: print("Gemini OK")
+            else: self.send_msg(f"⚠️ Gemini respondió raro: {response}")
         except Exception as e:
             self.send_msg(f"❌ FALLO TEST GEMINI: {str(e)}")
 
     def call_gemini(self, prompt):
-        if not SDK_AVAILABLE or not self.ai_client: return "❌ ERROR: SDK no disponible o Cliente no inicializado."
+        if not SDK_AVAILABLE or not self.ai_client: return "❌ ERROR: SDK no disponible."
         try:
-            # Configuración de seguridad laxa (Sin Censura)
+            # Configuración de seguridad MINIMA para evitar bloqueos
             config = types.GenerateContentConfig(
                 safety_settings=[
                     types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
                     types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
                     types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
                     types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                ]
+                ],
+                temperature=0.7 # Creatividad balanceada
             )
+            
             r = self.ai_client.models.generate_content(
                 model="gemini-2.0-flash", 
                 contents=prompt,
                 config=config
             )
+            
+            # Verificación de respuesta vacía o bloqueada
+            if not r.text:
+                return "⚠️ La IA devolvió una respuesta vacía (Posible bloqueo de contenido)."
+                
             return r.text
+            
         except Exception as e: 
-            error_trace = traceback.format_exc()
-            print(f"❌ Error Gemini API: {e}")
-            return f"⚠️ CRASH GEMINI: {str(e)}\nTrace: {error_trace[:200]}"
+            return f"⚠️ EXCEPCIÓN IA: {str(e)[:200]}"
 
     # --- CÁLCULO ---
     def calculate_team_stats(self, df, team):
@@ -312,7 +313,7 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- SELECCIÓN AGRESIVA ---
+    # --- SELECCIÓN AGRESIVA (ANTI-HANDICAP BARATO) ---
     def find_best_value(self, sim, odds):
         candidates = []
         def add(name, market, prob, odd, gcs=None):
@@ -327,7 +328,8 @@ class OmniHybridBot:
                 if gcs < 55: status="REJECTED"; reason=f"GCS Pobre ({gcs:.0f})"
                 elif prob > 0.65 or prob < 0.35: status="REJECTED"; reason="Prob Extrema"
             
-            # FILTRO ANTI-HANDICAP BARATO
+            # --- REGLA DE ORO v77: CÁRCEL DE HANDICAPS ---
+            # Si es Handicap < 1.60, va directo a BACKUP. Prohibido ser pick principal.
             if market == "HANDI" and odd < 1.60:
                 status = "BACKUP"
                 reason = "Cuota Baja (Backup)"
@@ -449,61 +451,51 @@ class OmniHybridBot:
 
         if audit_buffer:
             audit_text = "\n".join(audit_buffer)
-            prompt = f"Eres el CONSULTOR SENIOR del fondo.\nRESULTADOS AYER:\n{audit_text}\n\nTAREA:\n1. Diagnóstico breve.\n2. MEJORA TÉCNICA: Ajustes de pesos.\n\nHTML:\n👨‍🏫 <b>CONSULTORÍA TÉCNICA</b>\n📑 <b>Diagnóstico:</b> ...\n🔧 <b>ORDEN DE INGENIERÍA:</b> ..."
+            # Prompt de Auditoría
+            prompt = f"Eres un Analista Deportivo. Resultados ayer:\n{audit_text}\nDime qué falló y qué acertó brevemente."
             try:
                 ai_resp = self.call_gemini(prompt)
-                self.send_msg(ai_resp)
-            except Exception as e: self.send_msg(f"Error Auditoria: {e}")
+                self.send_msg(f"🔬 <b>AUDITORÍA:</b>\n{ai_resp}")
+            except Exception as e: self.send_msg(f"Error Audit: {e}")
 
-    # --- MAIN STRATEGY ---
+    # --- MAIN STRATEGY (ROBUST) ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está diseñando las jugadas maestras...</b>")
         picks_text = "\n".join(self.daily_picks_buffer)
         
+        # PROMPT "SAFE" PARA EVITAR BLOQUEOS
         prompt = f"""
-        Eres el JEFE DE ESTRATEGIA de un fondo de inversión deportiva (Quant Fund).
+        Actúa como un Analista de Datos de Fútbol.
         
-        DATOS TÉCNICOS (Picks procesados hoy):
+        Analiza estos partidos y probabilidades:
         ===
         {picks_text}
         ===
 
-        TU MISIÓN:
-        1. Audita los picks y elimina los "NO BET".
-        2. Elige "LA JOYA" (Máximo Valor, cuota > 1.70) y "EL BANKER" (Máxima Seguridad).
-        3. 🎲 CONSTRUYE 2 PARLAYS (COMBINADAS):
-           - PARLAY SEGURO (x2.00 aprox): Combina Bankers/Handicaps sólidos.
-           - PARLAY DE VALOR (x3.50+): Combina Joyas de alto EV.
+        Genera un reporte estratégico en HTML con:
+        1. "LA JOYA": El pick con mejor relación Valor/Riesgo (Cuota > 1.70).
+        2. "EL BANKER": El pick más seguro del día.
+        3. "PARLAY SEGURO": Combina 2 picks muy probables (puedes usar los Handicaps +1.5 aquí).
+        4. "PARLAY DE VALOR": Combina 2 picks de alto valor.
         
-        FORMATO HTML (Limpio y Frío):
-        🧠 <b>DICTAMEN FINAL v76</b>
-        
-        💎 <b>LA JOYA:</b> [Pick] (EV: %)
-        🛡️ <b>EL BANKER:</b> [Pick] (EV: %)
-        ✅ <b>LISTA DE VALOR:</b> [Breve lista]
-        📊 <b>ESTRATEGIA:</b> [Análisis frío y directo.]
-        
-        🎲 <b>PARLAY SEGURO (x2.xx):</b>
-        1. [Pick]
-        2. [Pick]
-        
-        🚀 <b>PARLAY DE VALOR (x?.??):</b>
-        1. [Pick]
-        2. [Pick]
+        Usa un tono profesional y frío. Formato HTML limpio.
         """
+        
         try:
+            print("Enviando prompt a Gemini...", flush=True)
             ai_resp = self.call_gemini(prompt)
-            if ai_resp: self.send_msg(ai_resp)
-            else: self.send_msg("⚠️ ERROR: Gemini devolvió respuesta vacía.")
+            print("Respuesta recibida.", flush=True)
+            self.send_msg(ai_resp)
         except Exception as e:
-            self.send_msg(f"⚠️ CRASH CRÍTICO EN GEMINI: {e}")
+            error_msg = f"⚠️ <b>ERROR JEFE DE ESTRATEGIA:</b>\nNo se pudo generar el reporte.\nDetalle: {str(e)}"
+            self.send_msg(error_msg)
 
     def run_analysis(self):
         self.run_audit()
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v76.1 DEBUGGER MODE: {today}", flush=True)
+        print(f"🚀 Iniciando v77.0 ROBUST: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -521,7 +513,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Debug Mode)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Robust Mode)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -548,7 +540,7 @@ class OmniHybridBot:
                     stake = self.get_kelly_stake(best_bet['prob'], best_bet['odd'], best_bet['market'])
                     stake_txt = f"{stake*100:.2f}%"
                 elif is_backup:
-                    icon = "🛡️"; status_line = "⚠️ <b>NO BET:</b> Cuota muy baja (Backup)"
+                    icon = "🛡️"; status_line = "⚠️ <b>NO BET:</b> Cuota baja (Reserva para Parlay)"
                     stake = 0.0; stake_txt = "Skipped"
                 else:
                     icon = "⛔"; status_line = f"⚠️ <b>NO BET:</b> {best_bet['reason']}"
@@ -564,7 +556,7 @@ class OmniHybridBot:
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v76.1</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v77</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
@@ -593,7 +585,9 @@ class OmniHybridBot:
                 
                 # Guardamos para Gemini
                 if is_valid or is_backup:
-                    self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
+                    # Añadimos etiqueta para que Gemini sepa cual es cual
+                    tag = "[VALID]" if is_valid else "[BACKUP]"
+                    self.daily_picks_buffer.append(f"{tag} {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
