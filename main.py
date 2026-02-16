@@ -9,22 +9,22 @@ import os
 import csv
 import json
 import re
+import math
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v68.0 (PREDICTIVE SCORE ADDED) ---
+# --- CONFIGURACIÓN v69.0 (DIXON-COLES & DYNAMIC WEIGHTS) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "03:03" 
+RUN_TIME = "03:13" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 100000 
 DECAY_ALPHA = 0.88          
-WEIGHT_MARKET = 0.70  
-WEIGHT_MODEL = 0.30   
+WEIGHT_MODEL_DEFAULT = 0.30 # Fallback
 
 SEASON = '2526'       
 HISTORY_FILE = "historial_omni_hybrid.csv"
@@ -44,16 +44,20 @@ try:
 except ImportError:
     SDK_AVAILABLE = False
 
+# --- CONFIGURACIÓN DE LIGAS CON PESOS DINÁMICOS ---
+# weight: Cuánto confiamos en el MERCADO (0.0 a 1.0)
+# Ligas eficientes (E0, SP1) -> Alto peso al mercado (0.85)
+# Ligas volátiles (T1, B1) -> Menor peso al mercado (0.60), más al modelo
 LEAGUE_CONFIG = {
-    'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1},
-    'SP1': {'name': '🇪🇸 LA LIGA', 'tier': 1},
-    'I1':  {'name': '🇮🇹 SERIE A', 'tier': 1},
-    'D1':  {'name': '🇩🇪 BUNDES',  'tier': 1},
-    'F1':  {'name': '🇫🇷 LIGUE 1', 'tier': 1},
-    'P1':  {'name': '🇵🇹 PORTUGAL','tier': 2},
-    'N1':  {'name': '🇳🇱 HOLANDA', 'tier': 2},
-    'B1':  {'name': '🇧🇪 BELGICA', 'tier': 2},
-    'T1':  {'name': '🇹🇷 TURQUIA', 'tier': 2}
+    'E0':  {'name': '🇬🇧 PREMIER', 'tier': 1, 'weight': 0.85},
+    'SP1': {'name': '🇪🇸 LA LIGA', 'tier': 1, 'weight': 0.85},
+    'I1':  {'name': '🇮🇹 SERIE A', 'tier': 1, 'weight': 0.80},
+    'D1':  {'name': '🇩🇪 BUNDES',  'tier': 1, 'weight': 0.80},
+    'F1':  {'name': '🇫🇷 LIGUE 1', 'tier': 1, 'weight': 0.75},
+    'P1':  {'name': '🇵🇹 PORTUGAL','tier': 2, 'weight': 0.70},
+    'N1':  {'name': '🇳🇱 HOLANDA', 'tier': 2, 'weight': 0.70},
+    'B1':  {'name': '🇧🇪 BELGICA', 'tier': 2, 'weight': 0.60},
+    'T1':  {'name': '🇹🇷 TURQUIA', 'tier': 2, 'weight': 0.60}
 }
 
 class OmniHybridBot:
@@ -73,7 +77,7 @@ class OmniHybridBot:
                 print(f"⚠️ Error Init Gemini: {e}", flush=True)
 
     def _check_creds(self):
-        print("--- ENGINE v68 SCORE PREDICTOR STARTED ---", flush=True)
+        print("--- ENGINE v69 DIXON-COLES STARTED ---", flush=True)
 
     def _init_history_file(self):
         if not os.path.exists(HISTORY_FILE):
@@ -96,7 +100,6 @@ class OmniHybridBot:
 
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML" if use_html else None}
-        
         try:
             r = requests.post(url, json=payload, timeout=20)
             if r.status_code == 400 and use_html:
@@ -122,7 +125,7 @@ class OmniHybridBot:
             return r.text
         except Exception as e: return f"❌ Error Gemini: {str(e)[:100]}"
 
-    # --- CÁLCULO ---
+    # --- CÁLCULO ATAQUE Y DEFENSA ---
     def calculate_team_stats(self, df, team):
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(6)
         if len(matches) < 3: return 1.0, 1.0
@@ -161,17 +164,51 @@ class OmniHybridBot:
             avg_att /= cnt; avg_def /= cnt
             
             norm_stats = {t: {'att': s['att']/avg_att, 'def': s['def']/avg_def} for t, s in team_stats.items()}
-            self.history_cache[div] = {'stats': norm_stats, 'teams': teams, 'raw_df': df, 'avg_g': avg_g}
+            # Guardamos también el peso del mercado para esta liga
+            league_weight = LEAGUE_CONFIG.get(div, {}).get('weight', 0.70)
+            self.history_cache[div] = {'stats': norm_stats, 'teams': teams, 'raw_df': df, 'avg_g': avg_g, 'market_weight': league_weight}
             return self.history_cache[div]
         except: return None
 
-    # --- SIMULACIÓN Y MARCADOR EXACTO ---
+    # --- MOTOR MATEMÁTICO: DIXON-COLES ---
+    def poisson_prob(self, k, lamb):
+        return (math.pow(lamb, k) * math.exp(-lamb)) / math.factorial(k)
+
+    def calculate_dixon_coles_1x2(self, lambda_h, lambda_a):
+        # Ajuste Rho para corregir la subestimación de empates
+        rho = -0.13 
+        prob_h, prob_d, prob_a = 0.0, 0.0, 0.0
+        
+        # Iteramos hasta 6 goles (suficiente precisión)
+        for x in range(7):
+            for y in range(7):
+                p = self.poisson_prob(x, lambda_h) * self.poisson_prob(y, lambda_a)
+                
+                # Factor de corrección Dixon-Coles para marcadores bajos
+                correction = 1.0
+                if x == 0 and y == 0: correction = 1 - (lambda_h * lambda_a * rho)
+                elif x == 0 and y == 1: correction = 1 + (lambda_h * rho)
+                elif x == 1 and y == 0: correction = 1 + (lambda_a * rho)
+                elif x == 1 and y == 1: correction = 1 - (rho)
+                
+                final_p = p * correction
+                
+                if x > y: prob_h += final_p
+                elif x == y: prob_d += final_p
+                else: prob_a += final_p
+                
+        # Renormalizar por si acaso
+        total = prob_h + prob_d + prob_a
+        return prob_h/total, prob_d/total, prob_a/total
+
     def calibrate_goal_prob(self, p):
         return 0.5 + (p - 0.5) * 0.75
 
     def simulate_match(self, home, away, league_data, market_odds):
         stats = league_data['stats']
         avg_g = league_data['avg_g'] / 2
+        m_weight = league_data.get('market_weight', 0.70) # Peso dinámico
+        model_weight = 1.0 - m_weight
         
         h_st = stats.get(home, {'att':1.0, 'def':1.0})
         a_st = stats.get(away, {'att':1.0, 'def':1.0})
@@ -179,37 +216,30 @@ class OmniHybridBot:
         lambda_h = min(3.5, h_st['att'] * a_st['def'] * avg_g * 1.20)
         lambda_a = min(3.5, a_st['att'] * h_st['def'] * avg_g)
         
+        # 1. Probabilidades MODELO (Usando Dixon-Coles analítico, más preciso)
+        model_h, model_d, model_a = self.calculate_dixon_coles_1x2(lambda_h, lambda_a)
+        
+        # 2. Simulacion Monte Carlo (Para Handicaps y Goles complejos)
         h_sim = np.random.poisson(lambda_h, SIMULATION_RUNS)
         a_sim = np.random.poisson(lambda_a, SIMULATION_RUNS)
         
-        # --- NUEVO: MARCADOR EXACTO MÁS PROBABLE ---
-        # Empaquetamos resultados en tuplas (goles_local, goles_visita)
-        sim_scores = list(zip(h_sim, a_sim))
-        # Contamos cual es la tupla más común
-        most_common_score, count = Counter(sim_scores).most_common(1)[0]
-        score_prob = (count / SIMULATION_RUNS) * 100
-        correct_score_str = f"{most_common_score[0]}-{most_common_score[1]}"
-        
-        # Resto de la lógica (igual a v67)
-        model_h = np.mean(h_sim > a_sim)
-        model_a = np.mean(h_sim < a_sim)
-        model_d = np.mean(h_sim == a_sim)
-        
+        # 3. FUSIÓN DINÁMICA
         if market_odds['H'] > 0:
             margin = 1.05 
             implied_h = (1 / market_odds['H']) / margin
             implied_a = (1 / market_odds['A']) / margin
             implied_d = (1 / market_odds['D']) / margin
             
-            raw_h = (implied_h * WEIGHT_MARKET) + (model_h * WEIGHT_MODEL)
-            raw_a = (implied_a * WEIGHT_MARKET) + (model_a * WEIGHT_MODEL)
-            raw_d = (implied_d * WEIGHT_MARKET) + (model_d * WEIGHT_MODEL)
+            raw_h = (implied_h * m_weight) + (model_h * model_weight)
+            raw_a = (implied_a * m_weight) + (model_a * model_weight)
+            raw_d = (implied_d * m_weight) + (model_d * model_weight)
             
             total = raw_h + raw_a + raw_d
             final_h, final_a, final_d = raw_h/total, raw_a/total, raw_d/total
         else:
             final_h, final_d, final_a = model_h, model_d, model_a
 
+        # Goles
         over25_raw = np.mean((h_sim + a_sim) > 2.5)
         over25 = self.calibrate_goal_prob(over25_raw)
         
@@ -223,11 +253,18 @@ class OmniHybridBot:
             
         btts = np.mean((h_sim > 0) & (a_sim > 0))
         
+        # GCS Score
         xg_sum = lambda_h + lambda_a
         xg_diff = abs(lambda_h - lambda_a)
         xg_score = min(1, max(0, (xg_sum - 1.8) / 1.8))
         balance = max(0, 1 - (xg_diff / xg_sum)) if xg_sum > 0 else 0
         gcs = (0.30 * xg_score + 0.20 * balance + 0.20 * abs(over25 - 0.5)*2 + 0.15 * (1-abs(btts-over25)) + 0.15 * min(1, abs(over25-implied_over)/0.12)) * 100
+
+        # Marcador Probable
+        sim_scores = list(zip(h_sim, a_sim))
+        most_common, count = Counter(sim_scores).most_common(1)[0]
+        cs_str = f"{most_common[0]}-{most_common[1]}"
+        cs_prob = (count / SIMULATION_RUNS) * 100
 
         ah_h_minus = np.mean((h_sim - 1.5) > a_sim)
         ah_a_minus = np.mean((a_sim - 1.5) > h_sim)
@@ -242,8 +279,7 @@ class OmniHybridBot:
             'dc': (final_h + final_d, final_a + final_d),
             'dnb': (final_h/(final_h+final_a), final_a/(final_h+final_a)),
             'ah': (ah_h_minus, ah_a_minus, ah_h_plus, ah_a_plus),
-            'gcs': gcs,
-            'cs': (correct_score_str, score_prob) # Datos nuevos
+            'gcs': gcs, 'cs': (cs_str, cs_prob), 'm_weight': m_weight
         }
 
     # --- MULTI-BOOKIE ---
@@ -330,11 +366,9 @@ class OmniHybridBot:
         if pct <= 0.3: return "🧊"; 
         return "➡️"
 
-    # --- RESUMEN FINAL ---
     def generate_final_summary(self):
         if not self.daily_picks_buffer: return
         self.send_msg("⏳ <b>El Jefe de Estrategia está auditando la cartera...</b>")
-        
         picks_text = "\n".join(self.daily_picks_buffer)
         
         prompt = f"""
@@ -352,10 +386,9 @@ class OmniHybridBot:
         
         FORMATO HTML (Sin Markdown):
         🧠 <b>DICTAMEN FINAL</b>
-        
         💎 <b>LA JOYA:</b> [Selección]
         🛡️ <b>EL BANKER:</b> [Selección]
-        ✅ <b>LISTA DE VALOR:</b> [Breve lista de activos]
+        ✅ <b>LISTA DE VALOR:</b> [Breve lista]
         📊 <b>ESTRATEGIA:</b> [Consejo]
         """
         
@@ -365,7 +398,7 @@ class OmniHybridBot:
     def run_analysis(self):
         self.daily_picks_buffer = [] 
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v68 (Score Predictor): {today}", flush=True)
+        print(f"🚀 Iniciando v69 DIXON-COLES: {today}", flush=True)
         
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
@@ -383,7 +416,7 @@ class OmniHybridBot:
         daily = df[(df['Date'] >= target_date) & (df['Date'] <= target_date + timedelta(days=1))]
         
         bets_found = 0
-        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Predictor v68)...</b>")
+        self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos (Dixon-Coles + Weights)...</b>")
         
         for idx, row in daily.iterrows():
             div = row.get('Div')
@@ -403,7 +436,6 @@ class OmniHybridBot:
             
             if best_bet:
                 is_valid = best_bet['status'] == "VALID"
-                
                 if is_valid:
                     bets_found += 1
                     icon = "🎯"; status_line = "✅ <b>PICK ACTIVO</b>"
@@ -422,16 +454,14 @@ class OmniHybridBot:
                 btts = sim['goals'][1]
                 ov25 = sim['goals'][0]
                 ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
-                
                 h_stats, a_stats = sim['stats']
                 lambdas = sim['lambdas']
-                cs_str, cs_prob = sim['cs'] # Marcador exacto
-                
+                cs_str, cs_prob = sim['cs']
                 fair_odd_us = self.dec_to_am(1/best_bet['prob'])
                 gcs_info = f" | 🎯 GCS: <b>{sim['gcs']:.0f}</b>" if best_bet['market'] == 'GOALS' else ""
                 
                 msg = (
-                    f"🛡️ <b>ANÁLISIS v68</b> | {LEAGUE_CONFIG[div]['name']}\n"
+                    f"🛡️ <b>ANÁLISIS v69</b> | {LEAGUE_CONFIG[div]['name']}\n"
                     f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
                     f"───────────────\n"
                     f"{status_line}\n"
@@ -453,14 +483,13 @@ class OmniHybridBot:
                     f"🎯 Marcador Probable: <b>{cs_str}</b> ({cs_prob:.1f}%)\n"
                     f"⚔️ PODER (Att / Def / Exp.Goals):\n"
                     f"🏠 {rh}: {h_stats['att']:.2f} / {h_stats['def']:.2f} => <b>{lambdas[0]:.2f}</b> gls\n"
-                    f"✈️ {ra}: {a_stats['att']:.2f} / {a_stats['def']:.2f} => <b>{lambdas[1]:.2f}</b> gls"
+                    f"✈️ {ra}: {a_stats['att']:.2f} / {a_stats['def']:.2f} => <b>{lambdas[1]:.2f}</b> gls\n"
+                    f"⚖️ Confianza en Mercado: {sim['m_weight']*100:.0f}%"
                 )
                 self.send_msg(msg)
                 
                 if is_valid:
-                    self.daily_picks_buffer.append(
-                        f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)"
-                    )
+                    self.daily_picks_buffer.append(f"- {rh} vs {ra}: {best_bet['pick']} @ {best_bet['odd']:.2f} (EV: {best_bet['ev']*100:.1f}%)")
                 
                 with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                     csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], 0])
