@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v87.2 (TRANSPARENCY MODE) ---
+# --- CONFIGURACIÓN v87.3 (ANALYST PRO + FORCED OUTPUT) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:23" 
+RUN_TIME = "04:40" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -28,14 +28,17 @@ DECAY_ALPHA = 0.88
 SEASON = '2526'
 
 # --- 🏆 MANUAL MATCHES (CHAMPIONS/EUROPA) 🏆 ---
+# NOTA: Solo funcionan equipos de las ligas cargadas en LEAGUE_CONFIG.
+# Qarabag y Bodo/Glimt no saldrán porque no tenemos datos de la liga de Azerbaiyán o Noruega.
 MANUAL_MATCHES = [
     ('Galatasaray', 'Juventus'),
     ('Dortmund', 'Atalanta'),
-    ('Monaco', 'PSG'),
+    ('Monaco', 'Paris SG'), # Corregido a Paris SG
     ('Benfica', 'Real Madrid'),
-    ('Qarabag FK', 'Newcastle'),
-    ('Olympiacos', 'Leverkusen'),
-    ('Bodo/Glimt', 'Inter')
+    ('Club Brugge', 'Ath Madrid'), # Agregado (Ath Madrid suele ser el nombre en csv)
+    ('Olympiacos', 'Leverkusen')
+    # ('Qarabag FK', 'Newcastle'), -> No hay datos de Azerbaiyán
+    # ('Bodo/Glimt', 'Inter')      -> No hay datos de Noruega
 ]
 
 # --- 💾 PERSISTENCIA ---
@@ -52,7 +55,7 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 ]
 
-# FILTRO VIP (Solo reportamos estas + Copas)
+# FILTRO VIP
 TOP_5_LEAGUES = ['E0', 'SP1', 'I1', 'D1', 'F1']
 
 # CONFIGURACIÓN DE LIGAS
@@ -86,8 +89,8 @@ class OmniHybridBot:
         self.handicap_buffer = [] 
         self.global_db = {} 
         
-        print("--- ENGINE v87.2 TRANSPARENCY MODE STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v87.2</b>\n(Ver Todo: Picks + Descartes)\n📂 CSV: {HISTORY_FILE}")
+        print("--- ENGINE v87.3 ANALYST PRO STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v87.3</b>\n(Analista Estructurado + Fix Nombres)\n📂 CSV: {HISTORY_FILE}")
         self._init_history_file()
         
         self.ai_client = None
@@ -105,6 +108,7 @@ class OmniHybridBot:
     def sanitize_text(self, text):
         text = text.replace("```html", "").replace("```", "")
         text = re.sub(r'<!DOCTYPE.*?>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<html.*?>|</html>|<head>.*?</head>|<body.*?>|</body>', '', text, flags=re.DOTALL | re.IGNORECASE)
         text = text.replace("**", "") 
         return text.strip()
 
@@ -282,15 +286,14 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- LÓGICA TRANSPARENTE (Ver descartes) ---
+    # --- LÓGICA TRANSPARENTE ---
     def find_best_value(self, sim, odds, min_ev_league):
         candidates = []
         
         def add(name, market, prob, odd, gcs=None):
             status = "VALID"; reason = "WIN-FIRST"
             
-            # FILTROS (Ahora marcan REJECTED en lugar de ocultar el pick)
-            if odd < 1.05: return # Basura total
+            if odd < 1.05: return 
             
             if odd < 1.50 or odd > 2.20: 
                 status = "REJECTED"; reason = f"Cuota Insegura ({odd:.2f})"
@@ -303,12 +306,10 @@ class OmniHybridBot:
             elif (prob * odd) - 1 < -0.02:
                 status = "REJECTED"; reason = "EV Negativo"
 
-            # SCORING
             score = (prob * 100)
             if market in ["DNB", "Double Chance"]: score += 5
             if prob >= 0.68: score += 4
             
-            # Penalizamos el score de los rejected para que queden abajo en la lista
             if status == "REJECTED": score -= 50
             
             item = {'pick': name, 'market': market, 'prob': prob, 'odd': odd, 'ev': (prob*odd)-1, 'score': score, 'status': status, 'reason': reason, 'gcs': gcs}
@@ -331,126 +332,34 @@ class OmniHybridBot:
         elif ah_a_plus > 0.85: best_handi = {'pick': "HANDICAP A +1.5", 'odd': 1.15}
 
         if not candidates: return None, best_handi
-        
-        # Ordenamos por score. Los VALID quedarán arriba.
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- STAKE ESCALONADO ---
-    def get_stake(self, prob, odds, market, gcs=None):
-        base = 0.01 
-        if prob >= 0.65: base = 0.0125
-        if prob >= 0.70: base = 0.015
-        if market in ["DNB", "Double Chance"]: base *= 1.1
-        if market == 'GOALS': base *= 0.9
-        return min(base, 0.02)
-
-    def get_team_form_icon(self, df, team):
-        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
-        if len(matches) == 0: return "➡️"
-        points = 0; possible = len(matches) * 3
-        for _, row in matches.iterrows():
-            if row['HomeTeam'] == team:
-                if row['FTHG'] > row['FTAG']: points += 3
-                elif row['FTHG'] == row['FTAG']: points += 1
-            else:
-                if row['FTAG'] > row['FTHG']: points += 3
-                elif row['FTAG'] == row['FTHG']: points += 1
-        pct = points / possible
-        if pct >= 0.7: return "🔥"
-        if pct <= 0.3: return "🧊"
-        return "➡️"
-
-    # --- PNL & AUDITORÍA ---
-    def check_bet_result(self, pick, market, fthg, ftag):
-        if math.isnan(fthg): return "PENDING"
-        hg = int(fthg); ag = int(ftag); win = False
-        if market == "1X2":
-            if "HOME" in pick and hg > ag: win=True
-            elif "AWAY" in pick and ag > hg: win=True
-            elif "DRAW" in pick and hg == ag: win=True
-        elif market == "DNB":
-            if hg == ag: return "PUSH"
-            if "HOME" in pick and hg > ag: win=True
-            elif "AWAY" in pick and ag > hg: win=True
-        elif market == "Double Chance":
-            if ("1X" in pick and hg >= ag) or ("X2" in pick and ag >= hg): win=True
-        elif market == "GOALS":
-            if "OVER" in pick and (hg+ag) > 2.5: win=True
-            elif "UNDER" in pick and (hg+ag) < 2.5: win=True
-        elif market == "BTTS":
-            if "SÍ" in pick and (hg>0 and ag>0): win=True
-            elif "NO" in pick and not (hg>0 and ag>0): win=True
-        return "WIN" if win else "LOSS"
-
-    def run_audit(self):
-        if not os.path.exists(HISTORY_FILE): return
-        league_data_map = {}
-        for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
-        rows = []; audit_buffer = []
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f); header = next(reader); rows.append(header)
-                for row in reader:
-                    status = row[9]
-                    if status in ['VALID', '0', 'BACKUP'] and row[1] in league_data_map:
-                        div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]
-                        odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
-                        data = league_data_map.get(div)
-                        if data and not data['raw_df'].empty:
-                            raw = data['raw_df']
-                            match = raw[(raw['HomeTeam'] == home) & (raw['AwayTeam'] == away)]
-                            if not match.empty:
-                                fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
-                                res = self.check_bet_result(pick, market, fthg, ftag)
-                                if res in ["WIN", "LOSS", "PUSH"]:
-                                    row[9] = res; row[12] = fthg; row[13] = ftag
-                                    if res == "WIN": profit = (stake * odd) - stake
-                                    elif res == "LOSS": profit = -stake
-                                    else: profit = 0.0
-                                    row[11] = round(profit, 2)
-                                    if stake > 0: audit_buffer.append(f"{pick}: {res} ({row[11]} U)")
-                    rows.append(row)
-            with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f); writer.writerows(rows)
-            if audit_buffer:
-                audit_txt = "\n".join(audit_buffer)
-                try: self.send_msg(f"🔬 <b>AUDITORÍA DIARIA:</b>\n{audit_txt}")
-                except: pass
-        except Exception as e: print(f"Audit Error: {e}")
-
-    def calculate_pnl(self):
-        if not os.path.exists(HISTORY_FILE): return
-        try:
-            df = pd.read_csv(HISTORY_FILE)
-            df['Profit'] = pd.to_numeric(df['Profit'], errors='coerce').fillna(0)
-            df['Stake'] = pd.to_numeric(df['Stake'], errors='coerce').fillna(0)
-            total_profit = df['Profit'].sum()
-            roi = (total_profit / df['Stake'].sum() * 100) if df['Stake'].sum() > 0 else 0
-            self.send_msg(f"💰 <b>PnL TOTAL:</b> {total_profit:+.2f} U | ROI: {roi:.1f}%")
-        except: pass
-
-    # --- GEMINI ANALYST ---
+    # --- GEMINI ANALYST AGRESIVO ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
         self.send_msg("⏳ <b>El Analista de Datos está procesando la información...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
-        prompt = f"""
-        Actúa como un Analista de Datos de Apuestas Deportivas (Sports Betting Data Scientist).
-        A continuación, te pego reportes de partidos (incluyendo DESCARTES/NO BETS).
         
+        # PROMPT NUEVO: Obliga a dar picks aunque sean riesgosos
+        prompt = f"""
+        Actúa como un Analista de Apuestas Senior. Tu tono debe ser profesional y estructurado.
+        
+        Tienes los siguientes reportes de partidos (algunos VALIDADOS, otros REJECTED/DESCARTADOS):
         {reports_text}
 
-        Tu Misión:
-        1. Detectar el Valor Real: Cruza los datos de xG y Probabilidades.
-           Si ves un "NO BET" que tiene métricas sólidas (ej: xG alto pero el bot lo descartó por cuota), menciónalo como oportunidad oculta.
-        
-        2. Formato Resumido: Dame una tabla rápida:
-           Partido ➡️ Mejor Apuesta ➡️ Razón (5 palabras).
-        
-        3. El "Fun Parlay": Genera una combinada lógica con los mejores picks VALIDADOS.
+        TU TAREA OBLIGATORIA:
+        1. **TABLA DE OPORTUNIDADES (Todos los partidos)**:
+           Genera una tabla Markdown con estas columnas: 
+           | Partido | Pick Sugerido | Status | Razón Técnica |
+           *IMPORTANTE: Para los partidos "REJECTED", DEBES sugerir el pick que tenga más sentido lógico según la data (xG/Prob), pero márcalo como "⚠️ RIESGO". NO DEJES NINGUNO VACÍO.*
 
+        2. **EL PARLAY DEL DÍA (Obligatorio)**:
+           Construye una combinada lógica con los 3 mejores picks disponibles (mezcla Validados y Riesgo si es necesario).
+           Formato: Selección 1 + Selección 2 + Selección 3 = ¡Ticket de Valor!
+
+        No me des excusas. Si el bot descartó, tú busca la oportunidad oculta en la data y preséntala.
         USA SOLO negritas <b> y saltos de linea. NO uses Markdown (**).
         """
         try:
@@ -458,19 +367,12 @@ class OmniHybridBot:
             self.send_msg(ai_resp)
         except Exception as e: self.send_msg(f"⚠️ Error Gemini: {e}")
 
-    def find_team_in_global(self, team_name):
-        if team_name in self.global_db: return self.global_db[team_name], team_name
-        matches = difflib.get_close_matches(team_name, self.global_db.keys(), n=1, cutoff=0.6)
-        if matches: return self.global_db[matches[0]], matches[0]
-        return None, None
-
     # --- OUTPUT PROCESSOR ---
     def process_match_output(self, div, rh, ra, data, sim, best_bet, best_handi, today):
         is_cup = (div == 'EU_CUP')
         if not is_cup and div not in TOP_5_LEAGUES: return 
         if not best_bet: return
         
-        # LÓGICA DE DISPLAY: Mostramos TODO, pero con etiqueta diferente
         is_valid = best_bet['status'] == "VALID"
         
         if is_valid:
@@ -479,21 +381,15 @@ class OmniHybridBot:
             gcs_val = best_bet.get('gcs', 0)
             stake = self.get_stake(best_bet['prob'], best_bet['odd'], best_bet['market'], gcs_val)
             stake_txt = f"{stake*100:.2f}%"
-            
-            # Guardamos para resumen Gemini
-            msg_for_ai = f"PARTIDO: {rh} vs {ra}\nSTATUS: VALID\nPICK: {best_bet['pick']}\nPROB: {best_bet['prob']:.2f}\nODD: {best_bet['odd']}"
-            self.full_reports_buffer.append(msg_for_ai)
+            msg_for_ai = f"PARTIDO: {rh} vs {ra}\nSTATUS: VALID\nPICK: {best_bet['pick']}\nPROB: {best_bet['prob']:.2f}"
             self.daily_picks_buffer.append(f"✅ {rh} vs {ra}: {best_bet['pick']}")
-            
         else:
-            # ES UN DESCARTE
             status_line = f"🚫 <b>NO BET RECOMMENDED</b> ({best_bet['reason']})"
             pick_icon_display = "⚠️"
             stake = 0.0; stake_txt = "Skipped"
-            
-            # Guardamos para resumen Gemini (para que vea lo que se descartó)
-            msg_for_ai = f"PARTIDO: {rh} vs {ra}\nSTATUS: REJECTED ({best_bet['reason']})\nPROB: {best_bet['prob']:.2f}"
-            self.full_reports_buffer.append(msg_for_ai)
+            msg_for_ai = f"PARTIDO: {rh} vs {ra}\nSTATUS: REJECTED\nRAZON: {best_bet['reason']}\nMEJOR OPCION: {best_bet['pick']}\nPROB: {best_bet['prob']:.2f}"
+
+        self.full_reports_buffer.append(msg_for_ai)
 
         if best_handi:
             self.handicap_buffer.append(f"{rh} vs {ra}: {best_handi['pick']} @ {best_handi['odd']:.2f}")
@@ -508,7 +404,7 @@ class OmniHybridBot:
         league_name = LEAGUE_CONFIG.get(div, {'name': '🏆 COPA EUROPA'})['name']
 
         msg = (
-            f"🛡️ <b>ANÁLISIS v87.2</b> | {league_name}\n"
+            f"🛡️ <b>ANÁLISIS v87.3</b> | {league_name}\n"
             f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
             f"───────────────\n"
             f"{status_line}\n"
@@ -535,10 +431,23 @@ class OmniHybridBot:
         )
         self.send_msg(msg)
         
-        # Solo guardamos en CSV si es liga oficial y si fue VALID
         if div in LEAGUE_CONFIG and div != 'EU_CUP' and is_valid:
             with open(HISTORY_FILE, 'a', newline='', encoding='utf-8') as f:
                 csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
+
+    def get_stake(self, prob, odds, market, gcs=None):
+        base = 0.01 
+        if prob >= 0.65: base = 0.0125
+        if prob >= 0.70: base = 0.015
+        if market in ["DNB", "Double Chance"]: base *= 1.1
+        if market == 'GOALS': base *= 0.9
+        return min(base, 0.02)
+
+    def find_team_in_global(self, team_name):
+        if team_name in self.global_db: return self.global_db[team_name], team_name
+        matches = difflib.get_close_matches(team_name, self.global_db.keys(), n=1, cutoff=0.6)
+        if matches: return self.global_db[matches[0]], matches[0]
+        return None, None
 
     def run_analysis(self):
         self.run_audit()
@@ -547,7 +456,7 @@ class OmniHybridBot:
         self.full_reports_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v87.2 TRANSPARENCY: {today}", flush=True)
+        print(f"🚀 Iniciando v87.3 ANALYST PRO: {today}", flush=True)
         
         print("🌍 Cargando DB Global...", flush=True)
         for div in LEAGUE_CONFIG:
@@ -608,7 +517,7 @@ class OmniHybridBot:
                     best_bet, best_handi = self.find_best_value(sim, fair_odds, -100)
                     self.process_match_output('EU_CUP', real_h, real_a, hybrid_data, sim, best_bet, best_handi, today)
 
-        if self.daily_picks_buffer:
+        if self.full_reports_buffer:
             self.generate_final_summary()
         else:
             self.send_msg("🧹 Barrido completado.")
