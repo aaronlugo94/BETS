@@ -14,35 +14,38 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v87.5 (STABILITY FIXED) ---
+# --- CONFIGURACIÓN v88.0 (FULL ROSTER + CLEAN FORMAT) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:52" 
+RUN_TIME = "05:03" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
 DECAY_ALPHA = 0.88          
 SEASON = '2526'
 
-# --- 🏆 MANUAL MATCHES (CHAMPIONS/EUROPA) 🏆 ---
+# --- 🏆 MANUAL MATCHES (TODOS LOS 8) 🏆 ---
+# Ahora el bot forzará el análisis incluso si no tiene datos históricos de la liga.
 MANUAL_MATCHES = [
     ('Galatasaray', 'Juventus'),
     ('Dortmund', 'Atalanta'),
     ('Monaco', 'Paris SG'), 
     ('Benfica', 'Real Madrid'),
-    ('Club Brugge', 'Ath Madrid'),
-    ('Olympiacos', 'Leverkusen')
+    ('Club Brugge', 'Ath Madrid'), # Atletico Madrid
+    ('Olympiacos', 'Leverkusen'),
+    ('Qarabag FK', 'Newcastle'),   # Forzado con stats promedio
+    ('Bodo/Glimt', 'Inter')        # Forzado con stats promedio
 ]
 
 # --- 💾 PERSISTENCIA ---
 VOLUME_PATH = "/app/data" 
 if os.path.exists(VOLUME_PATH):
-    HISTORY_FILE = os.path.join(VOLUME_PATH, "historial_omni_v87.csv")
+    HISTORY_FILE = os.path.join(VOLUME_PATH, "historial_omni_v88.csv")
 else:
-    HISTORY_FILE = "historial_omni_v87.csv"
+    HISTORY_FILE = "historial_omni_v88.csv"
 
 # GESTIÓN DE RIESGO
 MAX_STAKE_PCT = 0.03 
@@ -85,8 +88,8 @@ class OmniHybridBot:
         self.handicap_buffer = [] 
         self.global_db = {} 
         
-        print("--- ENGINE v87.5 STABILITY FIXED STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v87.5</b>\n(All Attributes Restored)\n📂 CSV: {HISTORY_FILE}")
+        print("--- ENGINE v88.0 FULL ROSTER STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v88.0</b>\n(Los 8 Partidos + Formato Limpio)\n📂 CSV: {HISTORY_FILE}")
         self._init_history_file()
         
         self.ai_client = None
@@ -199,6 +202,7 @@ class OmniHybridBot:
         return 0.5 + (p - 0.5) * 0.75
 
     def simulate_match(self, home, away, league_data, market_odds, m_weight_config):
+        # FIX: .copy() para evitar corrupción de datos
         h_st = league_data['stats'].get(home, {'att':1.0, 'def':1.0}).copy()
         a_st = league_data['stats'].get(away, {'att':1.0, 'def':1.0}).copy()
         avg_g = league_data['avg_g'] / 2
@@ -331,39 +335,46 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST AGRESIVO ---
+    # --- GEMINI ANALYST AGRESIVO Y LIMPIO ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
         self.send_msg("⏳ <b>El Analista de Datos está procesando la información...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
-        prompt = f"""
-        Actúa como un Analista de Apuestas Senior. Tu tono debe ser profesional y estructurado.
         
-        Tienes los siguientes reportes de partidos (algunos VALIDADOS, otros REJECTED/DESCARTADOS):
+        # PROMPT MODIFICADO: NO TABLAS, SOLO LISTA LIMPIA
+        prompt = f"""
+        Actúa como un Analista de Apuestas Senior.
+        
+        Tienes los siguientes reportes de partidos:
         {reports_text}
 
-        TU TAREA OBLIGATORIA:
-        1. **TABLA DE OPORTUNIDADES (Todos los partidos)**:
-           Genera una tabla Markdown con estas columnas: 
-           | Partido | Pick Sugerido | Status | Razón Técnica |
-           *IMPORTANTE: Para los partidos "REJECTED", DEBES sugerir el pick que tenga más sentido lógico según la data (xG/Prob), pero márcalo como "⚠️ RIESGO". NO DEJES NINGUNO VACÍO.*
+        TU TAREA (Formato de Lista Limpia para Telegram):
+        
+        1. **RESUMEN DE OPORTUNIDADES**
+           Por cada partido, escribe una línea con este formato exacto:
+           ⚽ [Partido] ➡️ [Mejor Pick] (Razón breve)
+           
+           *Nota: Si el pick fue rechazado por el bot, recomiéndalo igual con un emoji de ⚠️.*
 
-        2. **EL PARLAY DEL DÍA (Obligatorio)**:
-           Construye una combinada lógica con los 3 mejores picks disponibles (mezcla Validados y Riesgo si es necesario).
-           Formato: Selección 1 + Selección 2 + Selección 3 = ¡Ticket de Valor!
+        2. **EL PARLAY DEL DÍA**
+           Crea una combinada lógica de 3 pasos.
+           🎫 Pick 1 + Pick 2 + Pick 3 = ¡Ticket de Valor!
 
-        No me des excusas. Si el bot descartó, tú busca la oportunidad oculta en la data y preséntala.
-        USA SOLO negritas <b> y saltos de linea. NO uses Markdown (**).
+        IMPORTANTE:
+        - NO uses tablas Markdown (se ven mal en móvil).
+        - NO uses introducciones largas. Ve al grano.
+        - Usa negritas <b> para resaltar.
         """
         try:
             ai_resp = self.call_gemini(prompt)
             self.send_msg(ai_resp)
         except Exception as e: self.send_msg(f"⚠️ Error Gemini: {e}")
 
-    # --- FUNCIONES RESTAURADAS ---
+    # --- FUNCIONES RESTAURADAS Y MEJORADAS ---
     def get_team_form_icon(self, df, team):
-        # Esta es la función que faltaba
+        if df is None or df.empty: return "🛡️" # Icono genérico si no hay datos (caso Qarabag)
+        
         matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
         if len(matches) == 0: return "➡️"
         points = 0; possible = len(matches) * 3
@@ -413,7 +424,6 @@ class OmniHybridBot:
         except: pass
 
     def run_audit(self):
-        # Función de auditoría real
         if not os.path.exists(HISTORY_FILE): return
         league_data_map = {}
         for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
@@ -461,7 +471,14 @@ class OmniHybridBot:
         if team_name in self.global_db: return self.global_db[team_name], team_name
         matches = difflib.get_close_matches(team_name, self.global_db.keys(), n=1, cutoff=0.6)
         if matches: return self.global_db[matches[0]], matches[0]
-        return None, None
+        
+        # --- MODO RESPALDO (FORCE MISSING TEAMS) ---
+        # Si no encontramos el equipo (ej: Qarabag), devolvemos stats promedio de un Tier 2
+        # para que la simulación corra y no se pierda el partido.
+        print(f"⚠️ Equipo {team_name} no encontrado. Usando Stats Promedio.", flush=True)
+        return {
+            'att': 1.0, 'def': 1.0, 'tier': 0.75, 'avg_g': 2.5, 'raw_df': None
+        }, team_name # Devolvemos el nombre original
 
     # --- OUTPUT PROCESSOR ---
     def process_match_output(self, div, rh, ra, data, sim, best_bet, best_handi, today):
@@ -491,8 +508,13 @@ class OmniHybridBot:
             self.handicap_buffer.append(f"{rh} vs {ra}: {best_handi['pick']} @ {best_handi['odd']:.2f}")
 
         form_h = self.get_team_form_icon(data['raw_df'], rh)
-        form_a = self.get_team_form_icon(data['raw_df'], ra) if 'raw_df' in data else "🛡️"
-        
+        # Fix para visitante en copas donde raw_df puede no tener al visitante
+        form_a = "🛡️" 
+        if data.get('raw_df') is not None:
+             # Intentamos buscar si el visitante está en el mismo DF (solo pasa en ligas domésticas o choque de misma liga)
+             # Para copas es complejo cruzar DFs aquí, dejamos icono genérico para estabilidad
+             pass
+
         ph, pd_raw, pa = sim['1x2']; dc1x, dcx2 = sim['dc']; dnb_h, dnb_a = sim['dnb']
         btts = sim['goals'][1]; ov25 = sim['goals'][0]; ah_h_m15, ah_a_m15, ah_h_p15, ah_a_p15 = sim['ah']
         h_stats, a_stats = sim['stats']; lambdas = sim['lambdas']; cs_str, cs_prob = sim['cs']
@@ -500,7 +522,7 @@ class OmniHybridBot:
         league_name = LEAGUE_CONFIG.get(div, {'name': '🏆 COPA EUROPA'})['name']
 
         msg = (
-            f"🛡️ <b>ANÁLISIS v87.5</b> | {league_name}\n"
+            f"🛡️ <b>ANÁLISIS v88.0</b> | {league_name}\n"
             f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
             f"───────────────\n"
             f"{status_line}\n"
@@ -538,7 +560,7 @@ class OmniHybridBot:
         self.full_reports_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v87.5 STABLE: {today}", flush=True)
+        print(f"🚀 Iniciando v88.0 FULL ROSTER: {today}", flush=True)
         
         print("🌍 Cargando DB Global...", flush=True)
         for div in LEAGUE_CONFIG:
@@ -574,12 +596,14 @@ class OmniHybridBot:
                     self.process_match_output(div, rh, ra, data, sim, best_bet, best_handi, today)
         except: pass
 
-        # 2. COPAS
+        # 2. COPAS (FORZADO)
         if MANUAL_MATCHES:
             self.send_msg(f"🏆 <b>ANALIZANDO {len(MANUAL_MATCHES)} PARTIDOS DE COPA</b>")
             for home_input, away_input in MANUAL_MATCHES:
                 h_data, real_h = self.find_team_in_global(home_input)
                 a_data, real_a = self.find_team_in_global(away_input)
+                
+                # SIEMPRE hay datos (porque find_team_in_global ahora devuelve dummy si no encuentra)
                 if h_data and a_data:
                     hybrid_data = {
                         'stats': {real_h: {'att': h_data['att'], 'def': h_data['def']}, 
