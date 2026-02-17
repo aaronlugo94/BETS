@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:03" 
+RUN_TIME = "05:019" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,36 +335,53 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST AGRESIVO Y LIMPIO ---
+    # --- GEMINI ANALYST (MODO ÉPICO + DOBLE PARLAY) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>El Analista de Datos está procesando la información...</b>")
+        self.send_msg("⏳ <b>El Analista de Datos está cocinando la estrategia...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
-        # PROMPT MODIFICADO: NO TABLAS, SOLO LISTA LIMPIA
         prompt = f"""
-        Actúa como un Analista de Apuestas Senior.
+        Actúa como un Narrador y Analista Deportivo de Élite.
+        Tengo estos reportes técnicos de partidos (algunos validados, otros descartados):
         
-        Tienes los siguientes reportes de partidos:
         {reports_text}
 
-        TU TAREA (Formato de Lista Limpia para Telegram):
-        
-        1. **RESUMEN DE OPORTUNIDADES**
-           Por cada partido, escribe una línea con este formato exacto:
-           ⚽ [Partido] ➡️ [Mejor Pick] (Razón breve)
-           
-           *Nota: Si el pick fue rechazado por el bot, recomiéndalo igual con un emoji de ⚠️.*
+        TU TAREA (Generar el Post Final de Telegram):
 
-        2. **EL PARLAY DEL DÍA**
-           Crea una combinada lógica de 3 pasos.
-           🎫 Pick 1 + Pick 2 + Pick 3 = ¡Ticket de Valor!
+        1. 📢 **INTRODUCCIÓN (Storytelling):** Escribe 2 líneas épicas sobre la jornada de hoy. Algo que genere expectativa (ej: "La Champions no perdona...").
 
-        IMPORTANTE:
-        - NO uses tablas Markdown (se ven mal en móvil).
-        - NO uses introducciones largas. Ve al grano.
-        - Usa negritas <b> para resaltar.
+        2. 📋 **EL RADAR DE LA JORNADA (Lista Completa):**
+           Lista TODOS los partidos analizados. Formato exacto por línea:
+           ⚽ [Local] vs [Visitante] ➡️ <b>[Pick Sugerido]</b> ([Razón breve, ej: xG Alto / Prob 70%])
+           *OJO: Si el pick venía marcado como REJECTED/NO BET, agrega un ⚠️ al inicio del pick.*
+
+        3. 🎫 **LAS COMBINADAS (Parlays Estructurados):**
+           Genera dos tickets distintos. NO los pongas en una sola línea, úsalos en lista vertical.
+
+           🛡️ <b>EL BANKER (Ticket Seguro):</b>
+           (Selecciona 3-5 picks de mayor probabilidad/seguridad matemática).
+           • Pick 1
+           • Pick 2
+           • Pick 3
+           • Pick 4 (Opcional)
+           • Pick 5 (Opcional)
+
+           🚀 <b>LA FUNBET (Ticket de Valor):</b>
+           (Selecciona 3-4 picks con lógica estadistica de goles/xG alto o cuotas interesantes).
+           • Pick 1
+           • Pick 2
+           • Pick 3 
+           • Pick 4 (Opcional)
+
+        4. 🧠 **CONCLUSIÓN:**
+           Una frase final corta sobre riesgos, disciplina y stake.
+
+        REGLAS DE FORMATO:
+        - USA SOLO negritas HTML <b>texto</b>. NO uses Markdown (**).
+        - En los Parlays, pon cada selección en una línea nueva.
+        - Sé conciso y directo.
         """
         try:
             ai_resp = self.call_gemini(prompt)
