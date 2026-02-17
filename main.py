@@ -14,13 +14,13 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v87.4 (CRASH FIXED) ---
+# --- CONFIGURACIÓN v87.5 (STABILITY FIXED) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "04:45" 
+RUN_TIME = "04:52" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -85,8 +85,8 @@ class OmniHybridBot:
         self.handicap_buffer = [] 
         self.global_db = {} 
         
-        print("--- ENGINE v87.4 CRASH FIXED STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v87.4</b>\n(Audit Functions Restored)\n📂 CSV: {HISTORY_FILE}")
+        print("--- ENGINE v87.5 STABILITY FIXED STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v87.5</b>\n(All Attributes Restored)\n📂 CSV: {HISTORY_FILE}")
         self._init_history_file()
         
         self.ai_client = None
@@ -361,7 +361,24 @@ class OmniHybridBot:
             self.send_msg(ai_resp)
         except Exception as e: self.send_msg(f"⚠️ Error Gemini: {e}")
 
-    # --- FUNCIONES RESTAURADAS QUE FALTABAN ---
+    # --- FUNCIONES RESTAURADAS ---
+    def get_team_form_icon(self, df, team):
+        # Esta es la función que faltaba
+        matches = df[(df['HomeTeam'] == team) | (df['AwayTeam'] == team)].tail(5)
+        if len(matches) == 0: return "➡️"
+        points = 0; possible = len(matches) * 3
+        for _, row in matches.iterrows():
+            if row['HomeTeam'] == team:
+                if row['FTHG'] > row['FTAG']: points += 3
+                elif row['FTHG'] == row['FTAG']: points += 1
+            else:
+                if row['FTAG'] > row['FTHG']: points += 3
+                elif row['FTAG'] == row['FTHG']: points += 1
+        pct = points / possible
+        if pct >= 0.7: return "🔥"
+        if pct <= 0.3: return "🧊"
+        return "➡️"
+
     def check_bet_result(self, pick, market, fthg, ftag):
         if math.isnan(fthg): return "PENDING"
         hg = int(fthg); ag = int(ftag)
@@ -396,12 +413,41 @@ class OmniHybridBot:
         except: pass
 
     def run_audit(self):
-        # Función simple para evitar el crash, la lógica real está en check_bet_result llamado desde run_analysis si se implementara loop
-        # En este script, la auditoría se corre al inicio de run_analysis leyendo el CSV.
+        # Función de auditoría real
         if not os.path.exists(HISTORY_FILE): return
-        # (Lógica de auditoría ya está integrada en el inicio de run_analysis, 
-        # pero mantenemos el método vacío o funcional para evitar Attribute Error si se llama externamente)
-        pass 
+        league_data_map = {}
+        for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
+        rows = []; audit_buffer = []
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f); header = next(reader); rows.append(header)
+                for row in reader:
+                    status = row[9]
+                    if status in ['VALID', '0', 'BACKUP'] and row[1] in league_data_map:
+                        div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]
+                        odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
+                        data = league_data_map.get(div)
+                        if data and not data['raw_df'].empty:
+                            raw = data['raw_df']
+                            match = raw[(raw['HomeTeam'] == home) & (raw['AwayTeam'] == away)]
+                            if not match.empty:
+                                fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
+                                res = self.check_bet_result(pick, market, fthg, ftag)
+                                if res in ["WIN", "LOSS", "PUSH"]:
+                                    row[9] = res; row[12] = fthg; row[13] = ftag
+                                    if res == "WIN": profit = (stake * odd) - stake
+                                    elif res == "LOSS": profit = -stake
+                                    else: profit = 0.0
+                                    row[11] = round(profit, 2)
+                                    if stake > 0: audit_buffer.append(f"{pick}: {res} ({row[11]} U)")
+                    rows.append(row)
+            with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f); writer.writerows(rows)
+            if audit_buffer:
+                audit_txt = "\n".join(audit_buffer)
+                try: self.send_msg(f"🔬 <b>AUDITORÍA DIARIA:</b>\n{audit_txt}")
+                except: pass
+        except Exception as e: print(f"Audit Error: {e}")
 
     def get_stake(self, prob, odds, market, gcs=None):
         base = 0.01 
@@ -454,7 +500,7 @@ class OmniHybridBot:
         league_name = LEAGUE_CONFIG.get(div, {'name': '🏆 COPA EUROPA'})['name']
 
         msg = (
-            f"🛡️ <b>ANÁLISIS v87.4</b> | {league_name}\n"
+            f"🛡️ <b>ANÁLISIS v87.5</b> | {league_name}\n"
             f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
             f"───────────────\n"
             f"{status_line}\n"
@@ -486,48 +532,13 @@ class OmniHybridBot:
                 csv.writer(f).writerow([today, div, rh, ra, best_bet['pick'], best_bet['market'], best_bet['prob'], best_bet['odd'], best_bet['ev'], best_bet['status'], stake, 0, "", ""])
 
     def run_analysis(self):
-        # Ahora sí, la lógica de auditoría está explícita aquí
-        if os.path.exists(HISTORY_FILE):
-            league_data_map = {}
-            for div in LEAGUE_CONFIG.keys(): league_data_map[div] = self.get_league_data(div)
-            rows = []; audit_buffer = []
-            try:
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f); header = next(reader); rows.append(header)
-                    for row in reader:
-                        status = row[9]
-                        if status in ['VALID', '0', 'BACKUP'] and row[1] in league_data_map:
-                            div = row[1]; home = row[2]; away = row[3]; pick = row[4]; market = row[5]
-                            odd = float(row[7]); stake = float(row[10]) if row[10] else 0.0
-                            data = league_data_map.get(div)
-                            if data and not data['raw_df'].empty:
-                                raw = data['raw_df']
-                                match = raw[(raw['HomeTeam'] == home) & (raw['AwayTeam'] == away)]
-                                if not match.empty:
-                                    fthg = match.iloc[0]['FTHG']; ftag = match.iloc[0]['FTAG']
-                                    res = self.check_bet_result(pick, market, fthg, ftag)
-                                    if res in ["WIN", "LOSS", "PUSH"]:
-                                        row[9] = res; row[12] = fthg; row[13] = ftag
-                                        if res == "WIN": profit = (stake * odd) - stake
-                                        elif res == "LOSS": profit = -stake
-                                        else: profit = 0.0
-                                        row[11] = round(profit, 2)
-                                        if stake > 0: audit_buffer.append(f"{pick}: {res} ({row[11]} U)")
-                        rows.append(row)
-                with open(HISTORY_FILE, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f); writer.writerows(rows)
-                if audit_buffer:
-                    audit_txt = "\n".join(audit_buffer)
-                    try: self.send_msg(f"🔬 <b>AUDITORÍA DIARIA:</b>\n{audit_txt}")
-                    except: pass
-            except Exception as e: print(f"Audit Error: {e}")
-
+        self.run_audit()
         self.calculate_pnl()
         self.daily_picks_buffer = [] 
         self.full_reports_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v87.4 CRASH FIXED: {today}", flush=True)
+        print(f"🚀 Iniciando v87.5 STABLE: {today}", flush=True)
         
         print("🌍 Cargando DB Global...", flush=True)
         for div in LEAGUE_CONFIG:
