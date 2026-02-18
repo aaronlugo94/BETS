@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:25" 
+RUN_TIME = "05:34" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,59 +335,48 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO ÉPICO + DOBLE PARLAY) ---
+    # --- GEMINI ANALYST (MODO RANKING: MEJOR A PEOR) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>El Analista de Datos está cocinando la estrategia...</b>")
+        self.send_msg("⏳ <b>El Analista de Datos está ordenando las oportunidades por calidad...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Narrador y Analista Deportivo de Élite.
-        Tengo estos reportes técnicos de partidos (algunos validados, otros descartados):
+        Actúa como un Analista de Apuestas Senior.
+        Tienes los siguientes reportes técnicos (incluyendo Probabilidades X-RAY, Odds y Status):
         
         {reports_text}
 
-        TU TAREA (Generar el Post Final de Telegram):
+        TU MISIÓN: Clasificar y ORDENAR cada oportunidad según su calidad matemática.
 
-        1. 📢 **INTRODUCCIÓN (Storytelling):** Escribe 2 líneas épicas sobre la jornada de hoy. Algo que genere expectativa (ej: "La Champions no perdona...").
+        1. 📢 **INTRODUCCIÓN:**
+           Una frase corta y potente sobre la jornada.
 
-        2. 📋 **EL RADAR DE LA JORNADA (Lista Completa):**
-           Lista TODOS los partidos analizados. Formato exacto por línea:
-           ⚽ [Local] vs [Visitante] ➡️ <b>[Pick Sugerido]</b> ([Razón breve, ej: xG Alto / Prob 70%])
-           *OJO: Si el pick venía marcado como REJECTED/NO BET, agrega un ⚠️ al inicio del pick.*
+        2. 📋 **EL RANKING DE OPORTUNIDADES (De Mejor a Peor):**
+           Analiza cada partido y asígnale una etiqueta. Luego, **reordena la lista** para mostrar primero las mejores opciones y al final los descartes.
 
-        3. 🎫 **LAS COMBINADAS (Parlays Estructurados):**
-           Genera dos tickets distintos. NO los pongas en una sola línea, úsalos en lista vertical.
+           *Criterios de Etiqueta:*
+           * **💎 SIMPLE (La Joya):** Si Cuota es 1.60 a 2.10 (-165 a +110) Y Prob > 55%. (Prioridad Alta).
+           * **🧱 PARLAY PIECE (Base Sólida):** Si Cuota es 1.25 a 1.60 (-400 a -165) Y Prob > 65%. (Prioridad Media).
+           * **⚠️ RIESGO / NO BET:** Si fue REJECTED o la probabilidad es baja. (Prioridad Baja).
 
-           🛡️ <b>EL BANKER (Ticket Seguro):</b>
-           (Selecciona 3-5 picks de mayor probabilidad/seguridad matemática).
-           • Pick 1
-           • Pick 2
-           • Pick 3
-           • Pick 4 (Opcional)
-           • Pick 5 (Opcional)
+           *Formato de Salida (Ordenado por Prioridad):*
+           1. ⚽ [Partido] ➡️ <b>[Pick]</b> [ETIQUETA]
+              └─ <i>(Razón breve: ej. "Prob 72% vs Cuota 1.80")</i>
 
-           🚀 <b>LA FUNBET (Ticket de Valor):</b>
-           (Selecciona 3-4 picks con lógica estadistica de goles/xG alto o cuotas interesantes).
-           • Pick 1
-           • Pick 2
-           • Pick 3 
-           • Pick 4 (Opcional)
+        3. 🧠 **VERDICTO FINAL:**
+           Un consejo de una línea sobre dónde enfocar el capital hoy.
 
-        4. 🧠 **CONCLUSIÓN:**
-           Una frase final corta sobre riesgos, disciplina y stake.
-
-        REGLAS DE FORMATO:
-        - USA SOLO negritas HTML <b>texto</b>. NO uses Markdown (**).
-        - En los Parlays, pon cada selección en una línea nueva.
-        - Sé conciso y directo.
+        REGLAS:
+        - NO inventes picks, usa la data provista.
+        - **IMPORTANTE:** El orden es vital. No me des la lista en desorden. Primero lo mejor.
+        - USA SOLO negritas HTML <b>texto</b> e itálicas <i>texto</i>. NO uses Markdown (**).
         """
         try:
             ai_resp = self.call_gemini(prompt)
             self.send_msg(ai_resp)
         except Exception as e: self.send_msg(f"⚠️ Error Gemini: {e}")
-
     # --- FUNCIONES RESTAURADAS Y MEJORADAS ---
     def get_team_form_icon(self, df, team):
         if df is None or df.empty: return "🛡️" # Icono genérico si no hay datos (caso Qarabag)
@@ -514,7 +503,7 @@ class OmniHybridBot:
             msg_for_ai = f"PARTIDO: {rh} vs {ra}\nSTATUS: VALID\nPICK: {best_bet['pick']}\nPROB: {best_bet['prob']:.2f}"
             self.daily_picks_buffer.append(f"✅ {rh} vs {ra}: {best_bet['pick']}")
         else:
-            status_line = f"🚫 <b>NO BET RECOMMENDED</b> ({best_bet['reason']})"
+            status_line = f"🚫 <b>NO BET</b> ({best_bet['reason']})"
             pick_icon_display = "⚠️"
             stake = 0.0; stake_txt = "Skipped"
             msg_for_ai = f"PARTIDO: {rh} vs {ra}\nSTATUS: REJECTED\nRAZON: {best_bet['reason']}\nMEJOR OPCION: {best_bet['pick']}\nPROB: {best_bet['prob']:.2f}"
