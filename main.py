@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "06:54" 
+RUN_TIME = "07:00" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,49 +335,61 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO v91.1: PROHIBIDO CALCULAR / SOLO COPIAR) ---
+    # --- GEMINI ANALYST (MODO SMART VIP: DISEÑO + RIGOR MATEMÁTICO) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>Generando reporte VIP (Corrigiendo cuotas)...</b>")
+        self.send_msg("⏳ <b>Generando reporte VIP con Escáner de Valor...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Editor de Contenidos. Tienes los reportes técnicos (X-RAY).
+        Actúa como un Analista Deportivo de Élite y Diseñador Gráfico.
+        Tienes los reportes técnicos (X-RAY) de los partidos.
 
         TU MISIÓN:
-        Generar el reporte VIP copiando EXACTAMENTE los datos.
+        Generar un reporte con DISEÑO VISUAL LIMPIO, pero seleccionando los picks con RIGOR MATEMÁTICO.
+
+        📉 REGLAS DE SELECCIÓN (FILTROS DE DINERO):
         
-        🚨 REGLA CRÍTICA DE CUOTAS (ODDS):
-        - ⛔ **PROHIBIDO CALCULAR O CONVERTIR DECIMALES.**
-        - Tu trabajo es COPIAR el valor Americano que ya viene en el texto.
-        - Ejemplo: Si el texto dice "Cuota Avg: -167 (1.60)", TÚ ESCRIBES **-167**.
-        - Ejemplo: Si el texto dice "Cuota Avg: -410 (1.24)", TÚ ESCRIBES **-410**.
-        - ⚠️ ERROR A EVITAR: No confundas 1.60 con +160. (1.60 decimal es -167). COPIA EL VALOR CON SIGNO (-) DEL TEXTO.
+        1. **💎 SIMPLE (Value):**
+           - Rango: **-165 a +110** (1.60 a 2.10).
+           - Probabilidad > 55%.
+           
+        2. **🧱 PARLAY (Seguridad Inteligente):**
+           - Rango: **-250 a -130** (1.40 a 1.76).
+           - Probabilidad > 65%.
+           - ⛔ **PROHIBIDO:** Cuotas peores a -260 (ej: -300, -410). Son basura.
+        
+        🧠 **LÓGICA DE BÚSQUEDA PROFUNDA:**
+        - Si el mercado principal (Winner) paga muy poco (ej: -410), **NO LO USES**.
+        - En su lugar, BUSCA EN EL X-RAY: ¿El Hándicap +1.5 entra en rango? ¿El Over 1.5 entra en rango?
+        - ÚSALOS para llenar el hueco de "Parlay".
+        - Si NADA entra en rango, escribe: "NO ENTRY" (Demuestra disciplina).
 
-        📉 REGLAS DE SELECCIÓN:
-        1. **💎 SIMPLE:** Rango -170 a +120. (Prob > 55%).
-        2. **🧱 PARLAY:** Rango -500 a -140. (Prob > 65%).
-        3. **LÓGICA:** Si el Winner paga poco (-410), busca en el X-RAY el Hándicap o Over que sí pague bien (-200). Si nada sirve, pon "NO ENTRY".
+        --- FORMATO DE SALIDA (EXACTO) ---
 
-        --- FORMATO VISUAL ---
-
-        🏆 <b>ANÁLISIS VIP: [Título]</b>
-        <i>La estadística busca valor.</i>
+        🏆 <b>ANÁLISIS VIP: [Título con Gancho]</b>
+        <i>La estadística busca valor en los locales hoy.</i>
         ───────────────────
 
         (Repite para cada partido):
         ⚽ <b>[Local] vs [Visita]</b>
-        <i>[Narrativa corta]</i>
-        💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Odd Copiada]</b> ([Prob]%)
-        🧱 <code>[EQUIPO + PICK PARLAY]</code> @ <b>[Odd Copiada]</b> ([Prob]%)
+        <i>[Narrativa de 1 línea con estilo]</i>
+        💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Odd]</b> ([Prob]%)
+        🧱 <code>[EQUIPO + PICK PARLAY]</code> @ <b>[Odd]</b> ([Prob]%)
         ───────────────────
 
         🎫 <b>TICKET MAESTRO DEL DÍA</b>
-        1️⃣ [Pick 1]
-        2️⃣ [Pick 2]
+        1️⃣ [Mejor Pick Parlay 1]
+        2️⃣ [Mejor Pick Parlay 2]
         💰 <b>Cuota Total:</b> [Suma]
 
+        REGLAS VISUALES:
+        - Usa etiquetas <code> para el pick.
+        - Usa formato Americano.
+        - Odd en americano no te confundas por los decimales del X Ray, conviertelo a americano.
+        - Sé conciso.
+        
         {reports_text}
         """
         try:
