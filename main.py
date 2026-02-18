@@ -20,25 +20,17 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "15:59" 
+RUN_TIME = "16:03" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
 DECAY_ALPHA = 0.88          
 SEASON = '2526'
 
-# --- 🏆 MANUAL MATCHES (TODOS LOS 8) 🏆 ---
-# Ahora el bot forzará el análisis incluso si no tiene datos históricos de la liga.
-#MANUAL_MATCHES = [
-   # ('AC Milan', 'Como'),
-   # ('Dortmund', 'Atalanta'),
-   # ('Monaco', 'Paris SG'), 
-   # ('Benfica', 'Real Madrid'),
-   # ('Club Brugge', 'Ath Madrid'), # Atletico Madrid
-   # ('Olympiacos', 'Leverkusen'),
-   # ('Qarabag FK', 'Newcastle'),   # Forzado con stats promedio
-   # ('Bodo/Glimt', 'Inter')        # Forzado con stats promedio
-]
+# --- 🏆 MANUAL MATCHES (LISTA VACÍA = MODO AUTOMÁTICO) ---
+# Dejamos la lista vacía [] para que el bot busque solo en el calendario oficial (Milan vs Como)
+MANUAL_MATCHES = [] 
+
 
 # --- 💾 PERSISTENCIA ---
 VOLUME_PATH = "/app/data" 
