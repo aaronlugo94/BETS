@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:34" 
+RUN_TIME = "05:41" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -30,10 +30,10 @@ SEASON = '2526'
 # --- 🏆 MANUAL MATCHES (TODOS LOS 8) 🏆 ---
 # Ahora el bot forzará el análisis incluso si no tiene datos históricos de la liga.
 MANUAL_MATCHES = [
-    ('Galatasaray', 'Juventus'),
-    ('Dortmund', 'Atalanta'),
-    ('Monaco', 'Paris SG'), 
-    ('Benfica', 'Real Madrid'),
+  #  ('Galatasaray', 'Juventus'),
+   # ('Dortmund', 'Atalanta'),
+   # ('Monaco', 'Paris SG'), 
+   # ('Benfica', 'Real Madrid'),
     ('Club Brugge', 'Ath Madrid'), # Atletico Madrid
     ('Olympiacos', 'Leverkusen'),
     ('Qarabag FK', 'Newcastle'),   # Forzado con stats promedio
@@ -335,43 +335,52 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO RANKING: MEJOR A PEOR) ---
+    # --- GEMINI ANALYST (LOGICA DE RECICLAJE) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>El Analista de Datos está ordenando las oportunidades por calidad...</b>")
+        self.send_msg("⏳ <b>El Analista de Datos está clasificando (Reciclando descartes)...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Analista de Apuestas Senior.
-        Tienes los siguientes reportes técnicos (incluyendo Probabilidades X-RAY, Odds y Status):
+        Actúa como un Analista de Apuestas Profesional. Tienes estos reportes técnicos:
         
         {reports_text}
 
-        TU MISIÓN: Clasificar y ORDENAR cada oportunidad según su calidad matemática.
+        TU MISIÓN: Clasificar inteligentemente cada partido en 3 categorías, INCLUSO si el bot lo marcó como "REJECTED".
+        
+        REGLES DE CLASIFICACIÓN (Síguelas estrictamente):
+        
+        1. **💎 SIMPLE (La Joya):** - Busco picks con Cuota **1.55 a 2.20**.
+           - Si el reporte dice "VALID", va aquí directo.
+           
+        2. **🧱 PARLAY PIECE (Ficha Segura):**
+           - AQUÍ ESTÁ LA CLAVE: Si un pick fue "REJECTED" o "NO BET" **SOLO por cuota baja** (ej: 1.25, 1.30, 1.40) pero la Probabilidad es ALTA (>65%), **NO LO TIRES A LA BASURA**.
+           - Clasifícalo como "PARLAY PIECE". Son ideales para combinar.
+           - Rango de Cuota ideal: 1.25 a 1.54.
 
-        1. 📢 **INTRODUCCIÓN:**
-           Una frase corta y potente sobre la jornada.
+        3. **⚠️ RIESGO (Descarte):**
+           - Solo pon aquí picks con Probabilidad Baja (<60%) o picks que realmente no tengan sentido.
 
-        2. 📋 **EL RANKING DE OPORTUNIDADES (De Mejor a Peor):**
-           Analiza cada partido y asígnale una etiqueta. Luego, **reordena la lista** para mostrar primero las mejores opciones y al final los descartes.
+        --- FORMATO DE SALIDA OBLIGATORIO ---
 
-           *Criterios de Etiqueta:*
-           * **💎 SIMPLE (La Joya):** Si Cuota es 1.60 a 2.10 (-165 a +110) Y Prob > 55%. (Prioridad Alta).
-           * **🧱 PARLAY PIECE (Base Sólida):** Si Cuota es 1.25 a 1.60 (-400 a -165) Y Prob > 65%. (Prioridad Media).
-           * **⚠️ RIESGO / NO BET:** Si fue REJECTED o la probabilidad es baja. (Prioridad Baja).
+        1. 📢 **INTRODUCCIÓN:** 1 línea con el resumen del día.
 
-           *Formato de Salida (Ordenado por Prioridad):*
-           1. ⚽ [Partido] ➡️ <b>[Pick]</b> [ETIQUETA]
-              └─ <i>(Razón breve: ej. "Prob 72% vs Cuota 1.80")</i>
+        2. 📋 **EL RANKING (Ordenado por Categoría):**
+           (Pon primero todos los SIMPLES, luego los PARLAY PIECES, al final RIESGO).
+           
+           💎 **PARA JUGAR SIMPLE (Derechas):**
+           ⚽ [Partido] ➡️ <b>[Pick]</b> (Cuota: [Odd] | Prob: [Prob]%)
+           
+           🧱 **PARA ARMAR PARLAYS (Fichas):**
+           ⚽ [Partido] ➡️ <b>[Pick]</b> (Cuota: [Odd] | Prob: [Prob]%)
+           
+           ⚠️ **NO TOCAR (Riesgo Alto):**
+           ⚽ [Partido] ➡️ [Pick] ([Razón del rechazo])
 
-        3. 🧠 **VERDICTO FINAL:**
-           Un consejo de una línea sobre dónde enfocar el capital hoy.
+        3. 🧠 **CONCLUSIÓN RÁPIDA:** Dónde poner la ficha más grande hoy.
 
-        REGLAS:
-        - NO inventes picks, usa la data provista.
-        - **IMPORTANTE:** El orden es vital. No me des la lista en desorden. Primero lo mejor.
-        - USA SOLO negritas HTML <b>texto</b> e itálicas <i>texto</i>. NO uses Markdown (**).
+        USA SOLO negritas <b>. NO uses Markdown (**). NO uses tablas.
         """
         try:
             ai_resp = self.call_gemini(prompt)
