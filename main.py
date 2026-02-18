@@ -30,7 +30,7 @@ SEASON = '2526'
 # --- 🏆 MANUAL MATCHES (TODOS LOS 8) 🏆 ---
 # Ahora el bot forzará el análisis incluso si no tiene datos históricos de la liga.
 MANUAL_MATCHES = [
-  #  ('Galatasaray', 'Juventus'),
+    ('AC Milan', 'Como'),
    # ('Dortmund', 'Atalanta'),
    # ('Monaco', 'Paris SG'), 
    # ('Benfica', 'Real Madrid'),
