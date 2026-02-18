@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "07:00" 
+RUN_TIME = "07:09" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -362,7 +362,7 @@ class OmniHybridBot:
         
         🧠 **LÓGICA DE BÚSQUEDA PROFUNDA:**
         - Si el mercado principal (Winner) paga muy poco (ej: -410), **NO LO USES**.
-        - En su lugar, BUSCA EN EL X-RAY: ¿El Hándicap +1.5 entra en rango? ¿El Over 1.5 entra en rango?
+        - En su lugar, BUSCA EN EL X-RAY que mercado cumple con las condiciones indicadas para un simple y parlay pick.
         - ÚSALOS para llenar el hueco de "Parlay".
         - Si NADA entra en rango, escribe: "NO ENTRY" (Demuestra disciplina).
 
@@ -375,8 +375,8 @@ class OmniHybridBot:
         (Repite para cada partido):
         ⚽ <b>[Local] vs [Visita]</b>
         <i>[Narrativa de 1 línea con estilo]</i>
-        💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Odd]</b> ([Prob]%)
-        🧱 <code>[EQUIPO + PICK PARLAY]</code> @ <b>[Odd]</b> ([Prob]%)
+        💎 <code>[EQUIPO + PICK SIMPLE]</code> @ ([Prob]%)
+        🧱 <code>[EQUIPO + PICK PARLAY]</code> @ ([Prob]%)
         ───────────────────
 
         🎫 <b>TICKET MAESTRO DEL DÍA</b>
@@ -387,7 +387,6 @@ class OmniHybridBot:
         REGLAS VISUALES:
         - Usa etiquetas <code> para el pick.
         - Usa formato Americano.
-        - Odd en americano no te confundas por los decimales del X Ray, conviertelo a americano.
         - Sé conciso.
         
         {reports_text}
