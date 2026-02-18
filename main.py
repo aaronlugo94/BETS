@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:41" 
+RUN_TIME = "05:48" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,57 +335,61 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (LOGICA DE RECICLAJE) ---
+    # --- GEMINI ANALYST (MODO SNIPER: 1 PICK POR JUEGO OBLIGATORIO) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>El Analista de Datos está clasificando (Reciclando descartes)...</b>")
+        self.send_msg("⏳ <b>El Analista está extrayendo el mejor pick de cada partido...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Analista de Apuestas Profesional. Tienes estos reportes técnicos:
+        Actúa como un Apostador Profesional Experto (Sniper).
+        Tienes reportes técnicos de varios partidos.
         
         {reports_text}
 
-        TU MISIÓN: Clasificar inteligentemente cada partido en 3 categorías, INCLUSO si el bot lo marcó como "REJECTED".
+        TU MISIÓN OBLIGATORIA:
+        Analiza CADA UNO de los partidos listados en el texto (no omitas ninguno).
+        Para cada partido, extrae la MEJOR opción de apuesta disponible basada en el análisis (xG, Probabilidad, Cuota).
+
+        Debes clasificar cada partido en una de estas 3 categorías:
+
+        1. **💎 SIMPLE (Value Bet):**
+           - Úsalo si la Cuota es mayor a 1.60 (-165) Y la Probabilidad es decente (>60%).
+           - Son picks para jugar derechos.
+
+        2. **🧱 PARLAY BUILDER (Ficha Segura):**
+           - Úsalo si la Cuota es baja (entre 1.20 y 1.59) PERO la Probabilidad es ALTA (>65%).
+           - IMPORTANTE: Si el reporte dice "NO BET RECOMMENDED" solo por "Cuota Insegura" o baja, ¡ESTE ES SU LUGAR! No lo descartes, úsalo para parlay.
+
+        3. **⚠️ RIESGO (Solo si es necesario):**
+           - Úsalo si la probabilidad es muy baja (<55%) o el partido es una moneda al aire.
+
+        --- FORMATO DE SALIDA (LISTA LIMPIA) ---
         
-        REGLES DE CLASIFICACIÓN (Síguelas estrictamente):
-        
-        1. **💎 SIMPLE (La Joya):** - Busco picks con Cuota **1.55 a 2.20**.
-           - Si el reporte dice "VALID", va aquí directo.
-           
-        2. **🧱 PARLAY PIECE (Ficha Segura):**
-           - AQUÍ ESTÁ LA CLAVE: Si un pick fue "REJECTED" o "NO BET" **SOLO por cuota baja** (ej: 1.25, 1.30, 1.40) pero la Probabilidad es ALTA (>65%), **NO LO TIRES A LA BASURA**.
-           - Clasifícalo como "PARLAY PIECE". Son ideales para combinar.
-           - Rango de Cuota ideal: 1.25 a 1.54.
+        Quiero una lista única, ordenada por horario o importancia, pero que incluya TODOS los juegos.
 
-        3. **⚠️ RIESGO (Descarte):**
-           - Solo pon aquí picks con Probabilidad Baja (<60%) o picks que realmente no tengan sentido.
+        1. 📢 **INTRODUCCIÓN:** Frase corta tipo "Análisis de la Jornada".
 
-        --- FORMATO DE SALIDA OBLIGATORIO ---
+        2. 📋 **ANÁLISIS UNO A UNO:**
+           (Itera por todos los partidos del reporte).
+           ⚽ [Equipo Local] vs [Visita]
+           ↳ 🎯 **[Pick]** ➡️ [ETIQUETA: 💎 SIMPLE / 🧱 PARLAY / ⚠️ RIESGO]
+           ↳ 📊 Info: Cuota [Odd] | Prob [Prob]%
 
-        1. 📢 **INTRODUCCIÓN:** 1 línea con el resumen del día.
+        3. 🧠 **CONCLUSIÓN RÁPIDA:**
+           "La mejor simple es [X] y el mejor parlay sería combinar [A] + [B]."
 
-        2. 📋 **EL RANKING (Ordenado por Categoría):**
-           (Pon primero todos los SIMPLES, luego los PARLAY PIECES, al final RIESGO).
-           
-           💎 **PARA JUGAR SIMPLE (Derechas):**
-           ⚽ [Partido] ➡️ <b>[Pick]</b> (Cuota: [Odd] | Prob: [Prob]%)
-           
-           🧱 **PARA ARMAR PARLAYS (Fichas):**
-           ⚽ [Partido] ➡️ <b>[Pick]</b> (Cuota: [Odd] | Prob: [Prob]%)
-           
-           ⚠️ **NO TOCAR (Riesgo Alto):**
-           ⚽ [Partido] ➡️ [Pick] ([Razón del rechazo])
-
-        3. 🧠 **CONCLUSIÓN RÁPIDA:** Dónde poner la ficha más grande hoy.
-
-        USA SOLO negritas <b>. NO uses Markdown (**). NO uses tablas.
+        REGLAS:
+        - NO pongas "N/A". Si la cuota no está explícita, búscala en el texto (Avg Odd) o estímala.
+        - Extrae el dato exacto del texto provisto.
+        - USA SOLO negritas HTML <b>. NO uses Markdown (**).
         """
         try:
             ai_resp = self.call_gemini(prompt)
             self.send_msg(ai_resp)
         except Exception as e: self.send_msg(f"⚠️ Error Gemini: {e}")
+          
     # --- FUNCIONES RESTAURADAS Y MEJORADAS ---
     def get_team_form_icon(self, df, team):
         if df is None or df.empty: return "🛡️" # Icono genérico si no hay datos (caso Qarabag)
