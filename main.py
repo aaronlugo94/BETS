@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "06:31" 
+RUN_TIME = "06:44" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,65 +335,61 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO STRICT PRO: BUSCA VALOR O DESCARTA) ---
+    # --- GEMINI ANALYST (MODO SMART VIP: DISEÑO + RIGOR MATEMÁTICO) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>Analizando mercados bajo estrictas reglas de valor...</b>")
+        self.send_msg("⏳ <b>Generando reporte VIP con Escáner de Valor...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Gestor de Inversiones Deportivas (Bankroll Manager).
-        Tienes los reportes técnicos (X-RAY).
-        
-        {reports_text}
+        Actúa como un Analista Deportivo de Élite y Diseñador Gráfico.
+        Tienes los reportes técnicos (X-RAY) de los partidos.
 
         TU MISIÓN:
-        Filtrar las oportunidades de hoy basándote ESTRICTAMENTE en la rentabilidad matemática.
+        Generar un reporte con DISEÑO VISUAL LIMPIO, pero seleccionando los picks con RIGOR MATEMÁTICO.
+
+        📉 REGLAS DE SELECCIÓN (FILTROS DE DINERO):
         
-        📉 TUS LÍMITES DE COMPRA (NO LOS ROMPAS):
-        
-        1. **💎 SIMPLE (Value Bet):**
+        1. **💎 SIMPLE (Value):**
            - Rango: **-165 a +110** (1.60 a 2.10).
-           - Probabilidad mínima: **55%**.
+           - Probabilidad > 55%.
            
-        2. **🧱 PARLAY PIECE (Anchor):**
+        2. **🧱 PARLAY (Seguridad Inteligente):**
            - Rango: **-250 a -130** (1.40 a 1.76).
-           - Probabilidad mínima: **65%**.
-           - ⛔ **PROHIBIDO:** Cuotas peores a -260 (ej: -300, -400, -1000). Eso es basura, no agrega valor y sí agrega riesgo.
+           - Probabilidad > 65%.
+           - ⛔ **PROHIBIDO:** Cuotas peores a -260 (ej: -300, -410). Son basura.
+        
+        🧠 **LÓGICA DE BÚSQUEDA PROFUNDA:**
+        - Si el mercado principal (Winner) paga muy poco (ej: -410), **NO LO USES**.
+        - En su lugar, BUSCA EN EL X-RAY: ¿El Hándicap +1.5 entra en rango? ¿El Over 1.5 entra en rango?
+        - ÚSALOS para llenar el hueco de "Parlay".
+        - Si NADA entra en rango, escribe: "NO ENTRY" (Demuestra disciplina).
 
-        --- INSTRUCCIÓN DE BÚSQUEDA PROFUNDA ---
-        Si el mercado principal (Winner/1X2) no cumple (ej: Brugge paga -410):
-        1. NO borres el partido.
-        2. BUSCA EN EL X-RAY otra opción que SÍ cumpla (ej: Over 1.5 goles, Handicap +1.5, Doble Oportunidad).
-        3. Si ABSOLUTAMENTE NADA cumple tus rangos, marca el partido como "NO ENTRY".
+        --- FORMATO DE SALIDA (EXACTO) ---
 
-        --- FORMATO DE SALIDA (LIMPIO VIP) ---
+        🏆 <b>ANÁLISIS VIP: [Título con Gancho]</b>
+        <i>La estadística busca valor en los locales hoy.</i>
+        ───────────────────
 
-        1. ENCABEZADO:
-           🏆 <b>ANÁLISIS VIP PRO</b>
-           <i>Disciplina sobre emoción.</i>
-           ───────────────────
+        (Repite para cada partido):
+        ⚽ <b>[Local] vs [Visita]</b>
+        <i>[Narrativa de 1 línea con estilo]</i>
+        💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Odd]</b> ([Prob]%)
+        🧱 <code>[EQUIPO + PICK PARLAY]</code> @ <b>[Odd]</b> ([Prob]%)
+        ───────────────────
 
-        2. LISTA (Itera por TODOS los partidos recibidos):
-           ⚽ <b>[Local] vs [Visita]</b>
-           <i>[Narrativa de 1 línea]</i>
-           
-           💎 <b>SIMPLE:</b> <code>[PICK]</code> @ <b>[Cuota]</b> ([Prob]%)
-           🧱 <b>PARLAY:</b> <code>[PICK]</code> @ <b>[Cuota]</b> ([Prob]%)
-           
-           *(Si no encuentras pick válido en alguna categoría, pon "NO ENTRY (Fuera de rango)" para demostrar disciplina).*
-           ───────────────────
+        🎫 <b>TICKET MAESTRO DEL DÍA</b>
+        1️⃣ [Mejor Pick Parlay 1]
+        2️⃣ [Mejor Pick Parlay 2]
+        💰 <b>Cuota Total:</b> [Suma]
 
-        3. TICKET SUGERIDO:
-           🎫 <b>LA DOBLE DE HOY</b>
-           1️⃣ [Mejor Pick Parlay 1]
-           2️⃣ [Mejor Pick Parlay 2]
-           💰 <b>Cuota Total:</b> [Suma]
-
-        REGLAS:
-        - Usa formato americano.
-        - Sé honesto: Si hoy no hay valor, dilo.
+        REGLAS VISUALES:
+        - Usa etiquetas <code> para el pick.
+        - Usa formato Americano.
+        - Sé conciso.
+        
+        {reports_text}
         """
         try:
             ai_resp = self.call_gemini(prompt)
