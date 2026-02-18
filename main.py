@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "05:48" 
+RUN_TIME = "06:21" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,55 +335,52 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO SNIPER: 1 PICK POR JUEGO OBLIGATORIO) ---
+    # --- GEMINI ANALYST (MODO DISEÑO PREMIUM VIP) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>El Analista está extrayendo el mejor pick de cada partido...</b>")
+        self.send_msg("⏳ <b>Diseñando reporte VIP de alta lectura...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Apostador Profesional Experto (Sniper).
-        Tienes reportes técnicos de varios partidos.
+        Actúa como un Diseñador de Información y Tipster Profesional.
+        Tienes los reportes técnicos (X-RAY).
         
         {reports_text}
 
-        TU MISIÓN OBLIGATORIA:
-        Analiza CADA UNO de los partidos listados en el texto (no omitas ninguno).
-        Para cada partido, extrae la MEJOR opción de apuesta disponible basada en el análisis (xG, Probabilidad, Cuota).
-
-        Debes clasificar cada partido en una de estas 3 categorías:
-
-        1. **💎 SIMPLE (Value Bet):**
-           - Úsalo si la Cuota es mayor a 1.60 (-165) Y la Probabilidad es decente (>60%).
-           - Son picks para jugar derechos.
-
-        2. **🧱 PARLAY BUILDER (Ficha Segura):**
-           - Úsalo si la Cuota es baja (entre 1.20 y 1.59) PERO la Probabilidad es ALTA (>65%).
-           - IMPORTANTE: Si el reporte dice "NO BET RECOMMENDED" solo por "Cuota Insegura" o baja, ¡ESTE ES SU LUGAR! No lo descartes, úsalo para parlay.
-
-        3. **⚠️ RIESGO (Solo si es necesario):**
-           - Úsalo si la probabilidad es muy baja (<55%) o el partido es una moneda al aire.
-
-        --- FORMATO DE SALIDA (LISTA LIMPIA) ---
+        TU MISIÓN:
+        Crear un reporte VISUALMENTE LIMPIO, fácil de leer en celular, eliminando el desorden.
         
-        Quiero una lista única, ordenada por horario o importancia, pero que incluya TODOS los juegos.
+        ⛔ REGLAS DE FILTRO (MATEMÁTICAS):
+        1. **💎 SIMPLE:** Cuota -165 a +110. (Prob > 55%).
+        2. **🧱 PARLAY:** Cuota -250 a -130. (Prob > 65%).
+        *Si no hay pick válido en un rango, NO lo pongas.*
 
-        1. 📢 **INTRODUCCIÓN:** Frase corta tipo "Análisis de la Jornada".
+        --- ESTRUCTURA VISUAL OBLIGATORIA ---
 
-        2. 📋 **ANÁLISIS UNO A UNO:**
-           (Itera por todos los partidos del reporte).
-           ⚽ [Equipo Local] vs [Visita]
-           ↳ 🎯 **[Pick]** ➡️ [ETIQUETA: 💎 SIMPLE / 🧱 PARLAY / ⚠️ RIESGO]
-           ↳ 📊 Info: Cuota [Odd] | Prob [Prob]%
+        1. ENCABEZADO:
+           🏆 <b>ANÁLISIS VIP: [Frase Corta Impactante]</b>
+           <i>[Subtítulo de 1 línea sobre la tendencia general]</i>
+           ───────────────────
 
-        3. 🧠 **CONCLUSIÓN RÁPIDA:**
-           "La mejor simple es [X] y el mejor parlay sería combinar [A] + [B]."
+        2. LISTA DE PARTIDOS (Repetir para cada juego):
+           ⚽ <b>[Local] vs [Visita]</b>
+           <i>[Narrativa ultra corta de 1 línea]</i>
+           💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Cuota]</b> ([Prob]%)
+           🧱 <code>[EQUIPO + PICK PARLAY]</code> @ <b>[Cuota]</b> ([Prob]%)
+           ───────────────────
 
-        REGLAS:
-        - NO pongas "N/A". Si la cuota no está explícita, búscala en el texto (Avg Odd) o estímala.
-        - Extrae el dato exacto del texto provisto.
-        - USA SOLO negritas HTML <b>. NO uses Markdown (**).
+        3. TICKET FINAL (Resumen):
+           🎫 <b>TICKET MAESTRO DEL DÍA</b>
+           1️⃣ <b>[Mejor Pick Parlay 1]</b>
+           2️⃣ <b>[Mejor Pick Parlay 2]</b>
+           💰 <b>Cuota Total Aprox:</b> [Calcula la suma]
+
+        REGLAS DE FORMATO:
+        - Usa la etiqueta <code> para los picks (esto los resalta en Telegram).
+        - Usa <b> para las cuotas.
+        - Usa separadores visuales.
+        - NO pongas etiquetas de "Razón Técnica", intégralo en la narrativa si es vital, o elimínalo para limpieza.
         """
         try:
             ai_resp = self.call_gemini(prompt)
