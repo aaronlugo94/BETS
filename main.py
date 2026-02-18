@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "07:09" 
+RUN_TIME = "15:49" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -34,10 +34,10 @@ MANUAL_MATCHES = [
    # ('Dortmund', 'Atalanta'),
    # ('Monaco', 'Paris SG'), 
    # ('Benfica', 'Real Madrid'),
-    ('Club Brugge', 'Ath Madrid'), # Atletico Madrid
-    ('Olympiacos', 'Leverkusen'),
-    ('Qarabag FK', 'Newcastle'),   # Forzado con stats promedio
-    ('Bodo/Glimt', 'Inter')        # Forzado con stats promedio
+   # ('Club Brugge', 'Ath Madrid'), # Atletico Madrid
+   # ('Olympiacos', 'Leverkusen'),
+   # ('Qarabag FK', 'Newcastle'),   # Forzado con stats promedio
+   # ('Bodo/Glimt', 'Inter')        # Forzado con stats promedio
 ]
 
 # --- 💾 PERSISTENCIA ---
