@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "06:21" 
+RUN_TIME = "06:31" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -335,52 +335,65 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO DISEÑO PREMIUM VIP) ---
+    # --- GEMINI ANALYST (MODO STRICT PRO: BUSCA VALOR O DESCARTA) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
-        self.send_msg("⏳ <b>Diseñando reporte VIP de alta lectura...</b>")
+        self.send_msg("⏳ <b>Analizando mercados bajo estrictas reglas de valor...</b>")
         
         reports_text = "\n\n".join(self.full_reports_buffer)
         
         prompt = f"""
-        Actúa como un Diseñador de Información y Tipster Profesional.
+        Actúa como un Gestor de Inversiones Deportivas (Bankroll Manager).
         Tienes los reportes técnicos (X-RAY).
         
         {reports_text}
 
         TU MISIÓN:
-        Crear un reporte VISUALMENTE LIMPIO, fácil de leer en celular, eliminando el desorden.
+        Filtrar las oportunidades de hoy basándote ESTRICTAMENTE en la rentabilidad matemática.
         
-        ⛔ REGLAS DE FILTRO (MATEMÁTICAS):
-        1. **💎 SIMPLE:** Cuota -165 a +110. (Prob > 55%).
-        2. **🧱 PARLAY:** Cuota -250 a -130. (Prob > 65%).
-        *Si no hay pick válido en un rango, NO lo pongas.*
+        📉 TUS LÍMITES DE COMPRA (NO LOS ROMPAS):
+        
+        1. **💎 SIMPLE (Value Bet):**
+           - Rango: **-165 a +110** (1.60 a 2.10).
+           - Probabilidad mínima: **55%**.
+           
+        2. **🧱 PARLAY PIECE (Anchor):**
+           - Rango: **-250 a -130** (1.40 a 1.76).
+           - Probabilidad mínima: **65%**.
+           - ⛔ **PROHIBIDO:** Cuotas peores a -260 (ej: -300, -400, -1000). Eso es basura, no agrega valor y sí agrega riesgo.
 
-        --- ESTRUCTURA VISUAL OBLIGATORIA ---
+        --- INSTRUCCIÓN DE BÚSQUEDA PROFUNDA ---
+        Si el mercado principal (Winner/1X2) no cumple (ej: Brugge paga -410):
+        1. NO borres el partido.
+        2. BUSCA EN EL X-RAY otra opción que SÍ cumpla (ej: Over 1.5 goles, Handicap +1.5, Doble Oportunidad).
+        3. Si ABSOLUTAMENTE NADA cumple tus rangos, marca el partido como "NO ENTRY".
+
+        --- FORMATO DE SALIDA (LIMPIO VIP) ---
 
         1. ENCABEZADO:
-           🏆 <b>ANÁLISIS VIP: [Frase Corta Impactante]</b>
-           <i>[Subtítulo de 1 línea sobre la tendencia general]</i>
+           🏆 <b>ANÁLISIS VIP PRO</b>
+           <i>Disciplina sobre emoción.</i>
            ───────────────────
 
-        2. LISTA DE PARTIDOS (Repetir para cada juego):
+        2. LISTA (Itera por TODOS los partidos recibidos):
            ⚽ <b>[Local] vs [Visita]</b>
-           <i>[Narrativa ultra corta de 1 línea]</i>
-           💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Cuota]</b> ([Prob]%)
-           🧱 <code>[EQUIPO + PICK PARLAY]</code> @ <b>[Cuota]</b> ([Prob]%)
+           <i>[Narrativa de 1 línea]</i>
+           
+           💎 <b>SIMPLE:</b> <code>[PICK]</code> @ <b>[Cuota]</b> ([Prob]%)
+           🧱 <b>PARLAY:</b> <code>[PICK]</code> @ <b>[Cuota]</b> ([Prob]%)
+           
+           *(Si no encuentras pick válido en alguna categoría, pon "NO ENTRY (Fuera de rango)" para demostrar disciplina).*
            ───────────────────
 
-        3. TICKET FINAL (Resumen):
-           🎫 <b>TICKET MAESTRO DEL DÍA</b>
-           1️⃣ <b>[Mejor Pick Parlay 1]</b>
-           2️⃣ <b>[Mejor Pick Parlay 2]</b>
-           💰 <b>Cuota Total Aprox:</b> [Calcula la suma]
+        3. TICKET SUGERIDO:
+           🎫 <b>LA DOBLE DE HOY</b>
+           1️⃣ [Mejor Pick Parlay 1]
+           2️⃣ [Mejor Pick Parlay 2]
+           💰 <b>Cuota Total:</b> [Suma]
 
-        REGLAS DE FORMATO:
-        - Usa la etiqueta <code> para los picks (esto los resalta en Telegram).
-        - Usa <b> para las cuotas.
-        - Usa separadores visuales.
-        - NO pongas etiquetas de "Razón Técnica", intégralo en la narrativa si es vital, o elimínalo para limpieza.
+        REGLAS:
+        - Usa formato americano.
+        - Sé honesto: Si hoy no hay valor, dilo.
         """
         try:
             ai_resp = self.call_gemini(prompt)
