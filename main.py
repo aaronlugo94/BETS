@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "16:08" 
+RUN_TIME = "16:11" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -31,8 +31,8 @@ SEASON = '2526'
 # Dejamos la lista vacía [] para que el bot busque solo en el calendario oficial (Milan vs Como)
 MANUAL_MATCHES = [
 
-    ('Celtic', 'VfB Stuttgart')
-    ('PAOK', 'Celta de Vigo')
+    ('Celtic', 'VfB Stuttgart'),
+    ('PAOK', 'Celta de Vigo'),
     ('Fenerbahçe', 'Nottingham Forest')
     
 ] 
