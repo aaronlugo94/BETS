@@ -29,12 +29,7 @@ SEASON = '2526'
 
 # --- 🏆 MANUAL MATCHES (LISTA VACÍA = MODO AUTOMÁTICO) ---
 # Dejamos la lista vacía [] para que el bot busque solo en el calendario oficial (Milan vs Como)
-MANUAL_MATCHES = [
-
-  #  ('Celtic', 'VfB Stuttgart'),
-   # ('PAOK', 'Celta de Vigo'),
-    # ('Fenerbahçe', 'Nottingham Forest')
-    ] 
+MANUAL_MATCHES = [] 
 
 
 # --- 💾 PERSISTENCIA ---
