@@ -14,28 +14,30 @@ import traceback
 from datetime import datetime, timedelta
 from collections import Counter
 
-# --- CONFIGURACIÓN v92.0 (STABLE LEAGUE SCANNER + NO MATH AI) ---
+# --- CONFIGURACIÓN v93.0 (ULTIMATE STABLE) ---
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "03:05" 
+RUN_TIME = "03:14" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
 DECAY_ALPHA = 0.88          
 SEASON = '2526'
 
-# --- 🏆 MANUAL MATCHES ---
+# --- 🏆 MANUAL MATCHES (LISTA VACÍA = MODO AUTOMÁTICO) ---
+# Formato si quieres usarlo: ('Local', 'Visita', Cuota_Local, Cuota_Empate, Cuota_Visita)
+# Acepta cuotas americanas (ej: -150, +220) o decimales.
 MANUAL_MATCHES = [] 
 
 # --- 💾 PERSISTENCIA ---
 VOLUME_PATH = "/app/data" 
 if os.path.exists(VOLUME_PATH):
-    HISTORY_FILE = os.path.join(VOLUME_PATH, "historial_omni_v92.csv")
+    HISTORY_FILE = os.path.join(VOLUME_PATH, "historial_omni_v93.csv")
 else:
-    HISTORY_FILE = "historial_omni_v92.csv"
+    HISTORY_FILE = "historial_omni_v93.csv"
 
 # GESTIÓN DE RIESGO
 MAX_STAKE_PCT = 0.03 
@@ -78,8 +80,8 @@ class OmniHybridBot:
         self.handicap_buffer = [] 
         self.global_db = {} 
         
-        print("--- ENGINE v92.0 STABLE STARTED ---", flush=True)
-        self.send_msg(f"🔧 <b>INICIANDO v92.0</b>\n(Escáner de Ligas Reparado)\n📂 CSV: {HISTORY_FILE}")
+        print("--- ENGINE v93.0 ULTIMATE STARTED ---", flush=True)
+        self.send_msg(f"🔧 <b>INICIANDO v93.0</b>\n(Escáner Estabilizado + VIP Format)\n📂 CSV: {HISTORY_FILE}")
         self._init_history_file()
         
         self.ai_client = None
@@ -136,6 +138,7 @@ class OmniHybridBot:
                 att = (row['FTAG'] * 0.6) + ((row.get('AST', row['FTAG']*3)/3) * 0.4)
                 def_weak = (row['FTHG'] * 0.6) + ((row.get('HST', row['FTHG']*3)/3) * 0.4)
             w_att += att * weight; w_def += def_weak * weight
+        if total_w == 0: return 1.0, 1.0
         return w_att / total_w, w_def / total_w
 
     def get_league_data(self, div):
@@ -185,7 +188,9 @@ class OmniHybridBot:
                 if x > y: prob_h += final_p
                 elif x == y: prob_d += final_p
                 else: prob_a += final_p
-        return prob_h, prob_d, prob_a
+        total = prob_h + prob_d + prob_a
+        if total == 0: return 0.33, 0.33, 0.33
+        return prob_h/total, prob_d/total, prob_a/total
 
     def calibrate_goal_prob(self, p):
         return 0.5 + (p - 0.5) * 0.75
@@ -274,7 +279,7 @@ class OmniHybridBot:
             'BTTS_Y': get_avg(['BbAvBBTS', 'B365BTTSY'])
         }
 
-    # --- LÓGICA TRANSPARENTE (REPARADA PARA PERMITIR PARLAYS) ---
+    # --- LÓGICA DE FILTROS DE DINERO ---
     def find_best_value(self, sim, odds, min_ev_league):
         candidates = []
         
@@ -283,15 +288,15 @@ class OmniHybridBot:
             
             if odd < 1.05: return 
             
-            # REPARACIÓN: Permitimos cuotas desde 1.20 para Parlays
+            # Rangos Híbridos (Simple & Parlay)
             if 1.20 <= odd < 1.60:
-                if prob < 0.65: status = "REJECTED"; reason = "Cuota Baja / Riesgo Alto"
+                if prob < 0.65: status = "REJECTED"; reason = "Riesgo en Cuota Baja"
             elif 1.60 <= odd <= 2.30:
-                if prob < 0.50: status = "REJECTED"; reason = "Prob Insuficiente"
+                if prob < 0.50: status = "REJECTED"; reason = "Probabilidad Insuficiente"
             elif odd > 2.30:
-                 status = "REJECTED"; reason = "Cuota Muy Alta (Lotería)"
+                 status = "REJECTED"; reason = "Cuota Lotería (>2.30)"
             elif odd < 1.20:
-                 status = "REJECTED"; reason = "Cuota Miserable (< 1.20)"
+                 status = "REJECTED"; reason = "Cuota Basura (< 1.20)"
 
             if (prob * odd) - 1 < -0.05:
                 status = "REJECTED"; reason = "EV Negativo"
@@ -323,7 +328,7 @@ class OmniHybridBot:
         candidates.sort(key=lambda x: x['score'], reverse=True)
         return candidates[0], best_handi
 
-    # --- GEMINI ANALYST (MODO v92.0: NO MATH / FORMATO ESTRICTO) ---
+    # --- GEMINI ANALYST (MODO NO-MATH / VIP FORMAT) ---
     def generate_final_summary(self):
         if not self.full_reports_buffer: return
         self.send_msg("⏳ <b>Generando reporte VIP (Filtrando datos)...</b>")
@@ -354,7 +359,7 @@ class OmniHybridBot:
         <i>La estadística busca valor.</i>
         ───────────────────
 
-        (Repite para cada partido):
+        (Repite para cada partido recibido):
         ⚽ <b>[Local] vs [Visita]</b>
         <i>[Narrativa corta]</i>
         💎 <code>[EQUIPO + PICK SIMPLE]</code> @ <b>[Odd Copiada del Texto]</b> ([Prob]%)
@@ -385,13 +390,13 @@ class OmniHybridBot:
             else:
                 if row['FTAG'] > row['FTHG']: points += 3
                 elif row['FTAG'] == row['FTHG']: points += 1
-        pct = points / possible
+        pct = points / possible if possible > 0 else 0
         if pct >= 0.7: return "🔥"
         if pct <= 0.3: return "🧊"
         return "➡️"
 
     def check_bet_result(self, pick, market, fthg, ftag):
-        if math.isnan(fthg): return "PENDING"
+        if math.isnan(fthg) or math.isnan(ftag): return "PENDING"
         hg = int(fthg); ag = int(ftag)
         win = False
         if market == "1X2":
@@ -509,7 +514,7 @@ class OmniHybridBot:
         league_name = LEAGUE_CONFIG.get(div, {'name': '🏆 COPA EUROPA'})['name']
 
         msg = (
-            f"🛡️ <b>ANÁLISIS v92.0</b> | {league_name}\n"
+            f"🛡️ <b>ANÁLISIS v93.0</b> | {league_name}\n"
             f"⚽ <b>{rh}</b> {form_h} vs {form_a} <b>{ra}</b>\n"
             f"───────────────\n"
             f"{status_line}\n"
@@ -547,27 +552,32 @@ class OmniHybridBot:
         self.full_reports_buffer = [] 
         self.handicap_buffer = []
         today = datetime.now().strftime('%d/%m/%Y')
-        print(f"🚀 Iniciando v92.0 STABLE: {today}", flush=True)
+        print(f"🚀 Iniciando v93.0 ULTIMATE: {today}", flush=True)
         
         print("🌍 Cargando DB Global...", flush=True)
         for div in LEAGUE_CONFIG:
             if div != 'EU_CUP': self.get_league_data(div)
         
-        # 1. DOMESTICO (REPARADO PARA FECHAS Y ERRORES)
+        # 1. DOMESTICO (Motor v85.1 Restored + Zona Horaria Segura)
         ts = int(time.time())
+        url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
         try:
-            r = requests.get(f"https://www.football-data.co.uk/fixtures.csv?t={ts}", headers={'User-Agent': USER_AGENTS[0]}, timeout=20)
+            r = requests.get(url_fixt, headers={'User-Agent': USER_AGENTS[0]}, timeout=20)
             if r.status_code == 200:
                 try: content = r.content.decode('utf-8-sig')
                 except: content = r.content.decode('latin-1')
                 df = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
                 
-                # Normalizar fechas para evitar errores de zona horaria
-                df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce').dt.normalize()
-                target_date = pd.to_datetime(today, format='%d/%m/%Y').normalize()
+                # --- LA LÍNEA MÁGICA QUE SALVA EL ESCÁNER ---
+                df.columns = df.columns.str.strip().str.replace('ï»¿', '')
                 
-                # Buscar juegos de hoy o mañana (cubriendo diferencias de servidor)
-                daily = df[(df['Date'] == target_date) | (df['Date'] == target_date + timedelta(days=1))]
+                # Normalizar fechas a formato universal
+                df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce').dt.normalize()
+                today_dt = pd.Timestamp.now().normalize()
+                
+                # Búsqueda ampliada (Ayer, Hoy y Mañana) para neutralizar zonas horarias
+                daily = df[(df['Date'] >= today_dt - timedelta(days=1)) & (df['Date'] <= today_dt + timedelta(days=2))]
+                daily = daily[daily['Div'].isin(LEAGUE_CONFIG.keys())]
                 
                 self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos domésticos...</b>")
                 
@@ -587,16 +597,31 @@ class OmniHybridBot:
                     best_bet, best_handi = self.find_best_value(sim, m_odds, min_ev)
                     self.process_match_output(div, rh, ra, data, sim, best_bet, best_handi, today)
             else:
-                self.send_msg("⚠️ Archivo de ligas (fixtures.csv) no disponible hoy.")
+                self.send_msg("⚠️ Archivo de ligas (fixtures.csv) no disponible hoy en el servidor fuente.")
         except Exception as e: 
             self.send_msg(f"⚠️ Error fatal en escáner doméstico: {e}")
 
-        # 2. COPAS MANUALES
+        # 2. COPAS MANUALES (Con Fix de Variable pd -> p_draw y Traductor Americano)
         if MANUAL_MATCHES:
-            self.send_msg(f"🏆 <b>ANALIZANDO {len(MANUAL_MATCHES)} PARTIDOS DE COPA</b>")
-            for home_input, away_input in MANUAL_MATCHES:
+            self.send_msg(f"🏆 <b>ANALIZANDO {len(MANUAL_MATCHES)} PARTIDOS MANUALES</b>")
+            
+            def parse_odd(val):
+                if val == 0: return 0
+                if val < 0: return (100 / abs(val)) + 1 
+                if val > 50: return (val / 100) + 1      
+                return val                               
+
+            for item in MANUAL_MATCHES:
+                if len(item) == 5: home_input, away_input, raw_h, raw_d, raw_a = item
+                else: home_input, away_input = item[0], item[1]; raw_h=0; raw_d=0; raw_a=0
+
+                odd_h = parse_odd(raw_h)
+                odd_d = parse_odd(raw_d)
+                odd_a = parse_odd(raw_a)
+
                 h_data, real_h = self.find_team_in_global(home_input)
                 a_data, real_a = self.find_team_in_global(away_input)
+                
                 if h_data and a_data:
                     hybrid_data = {
                         'stats': {real_h: {'att': h_data['att'], 'def': h_data['def']}, 
@@ -607,13 +632,17 @@ class OmniHybridBot:
                         'h_avg_g': h_data['avg_g'], 'a_avg_g': a_data['avg_g'],
                         'raw_df': h_data['raw_df']
                     }
-                    sim = self.simulate_match(real_h, real_a, hybrid_data, {'H':0,'D':0,'A':0}, 0.5)
-                    ph, p_draw, pa = sim['1x2']; p_o25 = sim['goals'][0]; p_btts = sim['goals'][1]
-                    fair_odds = {
-                        'H': 1/ph if ph>0 else 0, 'D': 1/pd if pd>0 else 0, 'A': 1/pa if pa>0 else 0,
-                        'O25': 1/p_o25 if p_o25>0 else 0, 'BTTS_Y': 1/p_btts if p_btts>0 else 0
-                    }
-                    best_bet, best_handi = self.find_best_value(sim, fair_odds, -100)
+                    manual_odds = {'H': odd_h, 'D': odd_d, 'A': odd_a, 'O25': 1.90} 
+                    sim = self.simulate_match(real_h, real_a, hybrid_data, manual_odds, 0.5)
+                    
+                    if odd_h == 0:
+                        ph, p_draw, pa = sim['1x2']
+                        manual_odds = {
+                            'H': 1/ph if ph>0 else 0, 'D': 1/p_draw if p_draw>0 else 0, 'A': 1/pa if pa>0 else 0,
+                            'O25': 0 
+                        }
+
+                    best_bet, best_handi = self.find_best_value(sim, manual_odds, -100)
                     self.process_match_output('EU_CUP', real_h, real_a, hybrid_data, sim, best_bet, best_handi, today)
 
         if self.full_reports_buffer:
