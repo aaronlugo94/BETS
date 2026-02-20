@@ -20,7 +20,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-RUN_TIME = "03:20" 
+RUN_TIME = "03:25" 
 
 # AJUSTES DE MODELO
 SIMULATION_RUNS = 20000 
@@ -554,7 +554,7 @@ class OmniHybridBot:
         for div in LEAGUE_CONFIG:
             if div != 'EU_CUP': self.get_league_data(div)
         
-        # 1. DOMESTICO (Zona Horaria Segura y Scanner)
+# 1. DOMESTICO (Zona Horaria Segura y Scanner de Fechas)
         ts = int(time.time())
         url_fixt = f"https://www.football-data.co.uk/fixtures.csv?t={ts}"
         try:
@@ -565,18 +565,22 @@ class OmniHybridBot:
                 df = pd.read_csv(io.StringIO(content), on_bad_lines='skip')
                 
                 df.columns = df.columns.str.strip().str.replace('ï»¿', '')
+                print(f"📊 LIGAS EN CSV: {df['Div'].unique() if 'Div' in df.columns else 'Error'}", flush=True)
                 
-                # DIAGNÓSTICO EN CONSOLA (Para que veas qué ligas trae el CSV)
-                print(f"📊 DIAGNÓSTICO LIGAS EN CSV: {df['Div'].unique() if 'Div' in df.columns else 'Columna Div no encontrada'}", flush=True)
+                # --- FIX DE FECHAS: Limpiamos espacios basura antes de convertir ---
+                if 'Date' in df.columns:
+                    df['Date'] = df['Date'].astype(str).str.strip().str.replace(r'\s+', '', regex=True)
+                    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce').dt.normalize()
+                    print(f"🗓️ FECHAS EN CSV: Del {df['Date'].min()} al {df['Date'].max()}", flush=True)
                 
-                df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce').dt.normalize()
                 today_dt = pd.Timestamp.now().normalize()
+                print(f"🕒 FECHA DEL SERVIDOR (HOY): {today_dt}", flush=True)
                 
-                # BÚSQUEDA AMPLIA: Desde ayer hasta dentro de 3 días (Neutraliza desfases de UTC)
-                daily = df[(df['Date'] >= today_dt - timedelta(days=1)) & (df['Date'] <= today_dt + timedelta(days=3))]
+                # BÚSQUEDA SÚPER AMPLIA: Desde ayer hasta dentro de 7 días (Atrapa todo el fin de semana)
+                daily = df[(df['Date'] >= today_dt - timedelta(days=1)) & (df['Date'] <= today_dt + timedelta(days=7))]
                 daily = daily[daily['Div'].isin(LEAGUE_CONFIG.keys())]
                 
-                self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos domésticos...</b>")
+                self.send_msg(f"🔎 <b>Analizando {len(daily)} partidos domésticos de la jornada...</b>")
                 
                 for idx, row in daily.iterrows():
                     div = row.get('Div')
@@ -597,6 +601,7 @@ class OmniHybridBot:
                 self.send_msg("⚠️ Archivo de ligas (fixtures.csv) no disponible hoy en el servidor.")
         except Exception as e: 
             self.send_msg(f"⚠️ Error en escáner doméstico: {e}")
+            traceback.print_exc() # Esto imprimirá el error exacto en los logs
 
         # 2. COPAS MANUALES 
         if MANUAL_MATCHES:
