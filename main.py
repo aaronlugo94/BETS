@@ -608,7 +608,7 @@ class OmniHybridBot:
                         'raw_df': h_data['raw_df']
                     }
                     sim = self.simulate_match(real_h, real_a, hybrid_data, {'H':0,'D':0,'A':0}, 0.5)
-                    ph, pd, pa = sim['1x2']; p_o25 = sim['goals'][0]; p_btts = sim['goals'][1]
+                    ph, p_draw, pa = sim['1x2']; p_o25 = sim['goals'][0]; p_btts = sim['goals'][1]
                     fair_odds = {
                         'H': 1/ph if ph>0 else 0, 'D': 1/pd if pd>0 else 0, 'A': 1/pa if pa>0 else 0,
                         'O25': 1/p_o25 if p_o25>0 else 0, 'BTTS_Y': 1/p_btts if p_btts>0 else 0
